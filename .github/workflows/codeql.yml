@@ -20,7 +20,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [javascript-typescript, actions]
+        # python: the Hermes plugin (integrations/hermes-lean-ctx) ships to
+        # users, and the security/delivery gates are Python. It was scanned
+        # only by the retired default setup, whose last run was April 2026.
+        language: [javascript-typescript, actions, python]
     steps:
       - uses: actions/checkout@v4 # v4
         with:
