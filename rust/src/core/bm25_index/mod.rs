@@ -1115,11 +1115,14 @@ pub(crate) struct CorpusRules {
 
 impl CorpusRules {
     pub(crate) fn load() -> Self {
-        let cfg = crate::core::config::Config::load();
+        Self::from_config(&crate::core::config::Config::load())
+    }
+
+    fn from_config(cfg: &crate::core::config::Config) -> Self {
         // #735: the declared corpus filter ([index] config + CLI overlay) decides
         // membership before anything is chunked; the semantic index chunks this
         // corpus, so it inherits the same universe.
-        let filter = crate::core::index_filter::IndexFileFilter::resolve(&cfg);
+        let filter = crate::core::index_filter::IndexFileFilter::resolve(cfg);
         let ignore_patterns = DEFAULT_BM25_IGNORES
             .iter()
             .map(|p| (*p).to_string())
@@ -1173,7 +1176,10 @@ impl CorpusRules {
 }
 
 fn list_code_files(root: &Path) -> Vec<String> {
-    let rules = CorpusRules::load();
+    list_code_files_with(root, &CorpusRules::load())
+}
+
+fn list_code_files_with(root: &Path, rules: &CorpusRules) -> Vec<String> {
     let walker = rules
         .walker(root)
         .filter_entry(crate::core::walk_filter::keep_entry)
