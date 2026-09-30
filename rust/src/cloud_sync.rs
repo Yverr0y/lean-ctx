@@ -191,6 +191,7 @@ pub fn cloud_background_tasks() {
     // Persist path: read global-only so the daily background save never leaks a
     // project-local override into the global config (#443).
     let mut config = Config::load_global();
+    let before = config.clone();
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     let already_synced = config
@@ -327,9 +328,75 @@ pub fn cloud_background_tasks() {
         }
     }
 
-    if let Err(e) = config.save() {
+    if let Err(e) = persist_background_stamps(&before, &config) {
         tracing::warn!("could not persist cloud background state: {e}");
     }
+}
+
+/// Write back only the bookkeeping stamps this pass changed.
+///
+/// The pass holds its config snapshot across network calls that can take
+/// seconds. Saving the whole snapshot reverted every edit made meanwhile — a
+/// `lean-ctx config set`, the dashboard, an editor — and in tests it wrote a
+/// stale config into whichever isolated config dir was current at the time
+/// (the Windows in-band CCR flake, #1934). `update_global` re-reads the file
+/// at write time, so only the stamps change; an unchanged pass writes nothing.
+fn persist_background_stamps(
+    before: &Config,
+    after: &Config,
+) -> Result<(), crate::core::error::LeanCtxError> {
+    fn adopt<T: PartialEq + Clone>(before: &T, after: &T, fresh: &mut T) {
+        if before != after {
+            fresh.clone_from(after);
+        }
+    }
+
+    let (b, a) = (&before.cloud, &after.cloud);
+    let changed_index_pushes: Vec<(&String, &String)> = a
+        .last_index_push
+        .iter()
+        .filter(|(project, day)| b.last_index_push.get(*project) != Some(*day))
+        .collect();
+    if before.telemetry.last_heartbeat == after.telemetry.last_heartbeat
+        && b.last_sync == a.last_sync
+        && b.last_gain_sync == a.last_gain_sync
+        && b.last_model_pull == a.last_model_pull
+        && b.last_auto_sync == a.last_auto_sync
+        && changed_index_pushes.is_empty()
+    {
+        return Ok(());
+    }
+
+    Config::update_global(|fresh| {
+        adopt(
+            &before.telemetry.last_heartbeat,
+            &after.telemetry.last_heartbeat,
+            &mut fresh.telemetry.last_heartbeat,
+        );
+        adopt(&b.last_sync, &a.last_sync, &mut fresh.cloud.last_sync);
+        adopt(
+            &b.last_gain_sync,
+            &a.last_gain_sync,
+            &mut fresh.cloud.last_gain_sync,
+        );
+        adopt(
+            &b.last_model_pull,
+            &a.last_model_pull,
+            &mut fresh.cloud.last_model_pull,
+        );
+        adopt(
+            &b.last_auto_sync,
+            &a.last_auto_sync,
+            &mut fresh.cloud.last_auto_sync,
+        );
+        for (project, day) in changed_index_pushes {
+            fresh
+                .cloud
+                .last_index_push
+                .insert(project.clone(), day.clone());
+        }
+    })
+    .map(|_| ())
 }
 
 fn telemetry_ledger_endpoint() -> String {
@@ -776,6 +843,24 @@ pub fn collect_contribute_entries() -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1934: the background pass must not revert config edits made while it
+    /// was busy on the network — it writes back only the stamps it set.
+    #[test]
+    fn background_pass_keeps_edits_made_while_it_ran() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        let before = Config::load_global();
+        let mut after = before.clone();
+        after.cloud.last_sync = Some("2026-09-30".into());
+
+        // Meanwhile the user turns a setting on.
+        Config::update_global(|c| c.proxy.ccr_inband = Some(true)).unwrap();
+        persist_background_stamps(&before, &after).unwrap();
+
+        let on_disk = Config::load_global();
+        assert_eq!(on_disk.proxy.ccr_inband, Some(true), "the edit survived");
+        assert_eq!(on_disk.cloud.last_sync.as_deref(), Some("2026-09-30"));
+    }
 
     #[test]
     fn telemetry_ledger_endpoint_removes_credentials_query_and_fragment() {

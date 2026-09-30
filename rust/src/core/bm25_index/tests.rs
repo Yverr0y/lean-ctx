@@ -692,35 +692,12 @@ fn list_code_files_includes_extractable_pdf() {
 }
 
 #[test]
-fn list_code_files_respects_max_files_cap() {
-    let td = tempdir().expect("tempdir");
-    let root = td.path();
-
-    // Create more files than MAX_BM25_FILES wouldn't let us test easily (5000),
-    // but we can verify the cap constant exists and the function returns a bounded vec.
-    for i in 0..10 {
-        std::fs::write(
-            root.join(format!("f{i}.rs")),
-            format!("pub fn f{i}() {{}}\n"),
-        )
-        .expect("write");
-    }
-    let files = list_code_files(root);
-    assert!(
-        files.len() <= MAX_BM25_FILES,
-        "file count should not exceed MAX_BM25_FILES"
-    );
-}
-
-#[test]
 fn list_code_files_honors_bm25_max_files_config() {
-    // The env lock is load-bearing, not ceremony: this test points
-    // LEAN_CTX_CONFIG_DIR at a config with `bm25_max_files = 3`, and
-    // `Config::load_arc` memoizes into a process-wide cache. Without the lock
-    // a parallel test can observe that cap, and this test can observe another
-    // test's config — the pattern every other env-touching test in this file
-    // already follows.
-    let _env = crate::core::data_dir::test_env_lock();
+    // The cap is handed in as a `Config` value, not through
+    // LEAN_CTX_CONFIG_DIR: pointing the process-wide config at a
+    // `bm25_max_files = 3` file leaked that cap into every parallel test that
+    // reads the config without the env lock — e.g. the public
+    // `build_from_directory` indexed 3 files where its own listing saw 41.
     let td = tempdir().expect("tempdir");
     let root = td.path();
 
@@ -732,11 +709,11 @@ fn list_code_files_honors_bm25_max_files_config() {
         .expect("write");
     }
 
-    let cfg_dir = tempdir().expect("tempdir");
-    std::fs::write(cfg_dir.path().join("config.toml"), "bm25_max_files = 3\n").expect("write");
-    crate::test_env::set_var("LEAN_CTX_CONFIG_DIR", cfg_dir.path());
-    let files = list_code_files(root);
-    crate::test_env::remove_var("LEAN_CTX_CONFIG_DIR");
+    let cfg = crate::core::config::Config {
+        bm25_max_files: 3,
+        ..Default::default()
+    };
+    let files = list_code_files_with(root, &CorpusRules::from_config(&cfg));
 
     assert_eq!(
         files.len(),

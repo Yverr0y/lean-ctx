@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — the background cloud pass no longer reverts config edits (#1934)
+
+- The daily background pass (telemetry, stats/gain sync, model pull,
+  auto-push) read the config, worked on the network for up to several
+  seconds, and wrote the whole snapshot back. A change made in the
+  meantime was silently undone: `lean-ctx config set`, the dashboard, or
+  an editor. It now writes back only the timestamps it set, and nothing
+  at all when it set none.
+- Tests: this was the cause of the intermittent Windows failure of
+  `inband_ccr_emit_echo_splice_round_trip`. A pass started by a server
+  test wrote its stale config into another test's isolated config dir.
+- Tests: `build_from_directory_dispatches_parallel_and_matches_sequential`
+  could fail with 41 files listed but 3 indexed. The `bm25_max_files`
+  test pointed the process-wide config at a `bm25_max_files = 3` file,
+  so the cap applied to tests running at the same time. It now passes
+  the cap as a `Config` value. The test that only checked
+  `len() <= 5000` for 10 files was removed; the config test covers the
+  cap.
+
 ### Added — browser OAuth login for HTTP MCP servers (#1391)
 
 - `lean-ctx addon auth <name>` logs in to an HTTP MCP server that requires
