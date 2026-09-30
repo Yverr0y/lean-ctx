@@ -23,6 +23,18 @@ pub(crate) fn validate_command_with_write_allow_paths(
     validate_command_in_cwd(command, write_allow_paths, project_root, None)
 }
 
+/// The capture rule as the guard applies it, shared by the redirect and `tee`
+/// refusals so the two cannot drift apart. #1946: both used to call the rule
+/// "output capture into a project path", but a destination outside the
+/// project — and outside every root — is refused just the same. A caller who
+/// took that wording at its word tried another non-project path and was
+/// refused again with the identical text.
+const CAPTURE_RULE: &str = "The rule: output capture (`>`, `>>`, `| tee`) may only go to a \
+     scratch path (/tmp, /var/tmp, $TMPDIR) or a directory listed in `write_allow_paths` in \
+     config.toml. Every other destination is refused, inside the project or not, and the \
+     project root stays refused even when listed. Commands that do not capture output are \
+     not restricted.";
+
 /// Validate against the directory the command will actually run in (#1811).
 ///
 /// The write guard classifies the *destination*, so a relative redirect target
@@ -74,12 +86,9 @@ pub(crate) fn validate_command_in_cwd(
             "ERROR: ctx_shell refuses the redirect into `{target}` — the destination decides, \
              not the size of the output. ctx_shell compresses what it returns, so capturing \
              that output into a file you keep can write compression markers instead of the \
-             command's own bytes. \
-             The rule is output capture (`>`, `>>`, `| tee`) into a project path — other \
-             commands are not restricted. \
+             command's own bytes. {CAPTURE_RULE} \
              Write the file with the native Write tool or ctx_patch, or capture to a scratch \
-             path (/tmp, /var/tmp, $TMPDIR), which is allowed and keeps the output out of \
-             the MCP channel entirely.{}",
+             path, which keeps the output out of the MCP channel entirely.{}",
             relative_target_note(&target)
         ));
     }
@@ -98,14 +107,10 @@ pub(crate) fn validate_command_in_cwd(
         disallowed_tee_target(segment, write_allow_paths, project_root, here.as_deref())
     }) {
         return Some(format!(
-            "ERROR: ctx_shell refuses `tee {target}` — the destination is inside the \
-             project, and ctx_shell compresses what it returns, so the captured bytes may \
-             not be the command's own. \
-             Piping makes no difference: the destination decides. \
-             The rule is output capture into a project path — other commands are not \
-             restricted. \
-             Write the file with the native Write tool, or tee to a scratch path \
-             (/tmp, /var/tmp, $TMPDIR), which is allowed.{}",
+            "ERROR: ctx_shell refuses `tee {target}` — ctx_shell compresses what it returns, \
+             so the captured bytes may not be the command's own. \
+             Piping makes no difference: the destination decides. {CAPTURE_RULE} \
+             Write the file with the native Write tool, or tee to a scratch path.{}",
             relative_target_note(&target)
         ));
     }
@@ -134,7 +139,10 @@ pub(crate) fn validate_command_in_cwd(
              For text, fetch to stdout: curl <url> / wget -qO- <url>. \
              For a binary (image, PDF, archive) neither stdout nor the editor's Write \
              tool can carry the bytes — download to an absolute scratch path instead, \
-             e.g. curl -sL -o /tmp/shot.png <url>, which is permitted (GH #1661)."
+             e.g. curl -sL -o /tmp/shot.png <url>, which is permitted (GH #1661). \
+             The target must be a literal path, $TMPDIR, or a variable this same command \
+             set to a literal earlier (D=/tmp/x; curl -o $D/f); any other variable cannot \
+             be resolved here and is refused."
         ));
     }
 
@@ -214,10 +222,19 @@ fn download_to_file_reason(command: &str) -> Option<String> {
     // write and was blocked, leaving no in-tool way to fetch a binary at all.
     // Segments are paired with the directory they actually run in so a relative
     // target is judged where it lands.
-    for seg_cwd in crate::core::command_cwd::segments_with_cwd(command, None) {
+    //
+    // #1953: likewise a target spelled through a variable the same command set
+    // to a literal (`D=/tmp/x; curl -o $D/f`) is judged where it lands; any
+    // other variable stays unresolved and is refused as before.
+    let segments = crate::core::command_cwd::segments_with_cwd(command, None);
+    let known_vars = literal_assignments_before_each_segment(command, segments.len());
+    for (index, seg_cwd) in segments.into_iter().enumerate() {
         let seg = seg_cwd.segment;
         let here = seg_cwd.cwd;
+        let vars = &known_vars[index];
         let resolve = |path: &str| -> String {
+            let expanded = expand_leading_variable(path, vars);
+            let path = expanded.as_deref().unwrap_or(path);
             let p = std::path::Path::new(path);
             // `starts_with('/')`: shell text, so a Unix-absolute target is
             // absolute on Windows too, where `is_absolute` disagrees (#1467).
@@ -302,6 +319,122 @@ fn download_to_file_reason(command: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// For each segment, the variables known to hold a literal value when that
+/// segment starts (#1953).
+///
+/// Only a standalone `NAME=value` / `export NAME=value` segment that certainly
+/// runs in the current shell counts: not behind `&&`/`||` (it may be skipped),
+/// not in a pipeline or the background (a subshell, so nothing propagates).
+/// A value is literal only without `$`, a backtick or a leading `~`. Any
+/// segment that can rebind variables some other way (`read`, `for`, `eval`,
+/// `source`, …) forgets everything known so far. Where this cannot follow the
+/// shell it knows less, and an unknown variable leaves the target refused.
+fn literal_assignments_before_each_segment(
+    command: &str,
+    segment_count: usize,
+) -> Vec<std::collections::HashMap<String, String>> {
+    use crate::core::shell_allowlist::Separator;
+
+    let separated = crate::core::shell_allowlist::segments_with_separators(command);
+    if separated.len() != segment_count {
+        // Both come from the same scanner; if they ever disagree, resolve nothing.
+        return vec![std::collections::HashMap::new(); segment_count];
+    }
+    let mut known = std::collections::HashMap::new();
+    let mut prev: Option<Separator> = None;
+    let mut before_each = Vec::with_capacity(segment_count);
+    for (segment, sep) in separated {
+        before_each.push(known.clone());
+        let tokens = crate::core::shell_allowlist::shell_tokenize(&segment);
+        let words: &[String] = match tokens.first().map(String::as_str) {
+            Some("export") => &tokens[1..],
+            _ => &tokens,
+        };
+        let assignments: Option<Vec<(&str, &str)>> = words
+            .iter()
+            .map(|word| {
+                let (name, value) = word.split_once('=')?;
+                let valid_name = name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                valid_name.then_some((name, value))
+            })
+            .collect();
+        match assignments {
+            Some(pairs) if !pairs.is_empty() => {
+                let in_current_shell = matches!(prev, None | Some(Separator::Sequence))
+                    && matches!(sep, None | Some(Separator::Sequence | Separator::And));
+                for (name, value) in pairs {
+                    let literal = !value.contains(['$', '`']) && !value.starts_with('~');
+                    if in_current_shell && literal {
+                        known.insert(name.to_string(), value.to_string());
+                    } else {
+                        known.remove(name);
+                    }
+                }
+            }
+            _ => {
+                let rebinds = matches!(
+                    tokens.first().map(String::as_str),
+                    Some(
+                        "read"
+                            | "for"
+                            | "select"
+                            | "eval"
+                            | "source"
+                            | "."
+                            | "unset"
+                            | "declare"
+                            | "typeset"
+                            | "local"
+                            | "readonly"
+                            | "export"
+                            | "mapfile"
+                            | "readarray"
+                            | "getopts"
+                            | "printf"
+                    )
+                );
+                if rebinds {
+                    known.clear();
+                }
+            }
+        }
+        prev = sep;
+    }
+    before_each
+}
+
+/// Expand a target that starts with `$NAME` or `${NAME}` from `known`, or from
+/// the environment for `$TMPDIR` — the scratch variable the guard itself
+/// honours. `None` when the target starts with no variable or an unknown one.
+fn expand_leading_variable(
+    path: &str,
+    known: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let rest = path.strip_prefix('$')?;
+    let (name, tail) = if let Some(braced) = rest.strip_prefix('{') {
+        let (name, tail) = braced.split_once('}')?;
+        (name, tail)
+    } else {
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        rest.split_at(end)
+    };
+    if name.is_empty() || !(tail.is_empty() || tail.starts_with('/')) {
+        return None;
+    }
+    let value = match known.get(name) {
+        Some(value) => value.clone(),
+        None if name == "TMPDIR" => std::env::var("TMPDIR").ok().filter(|v| !v.is_empty())?,
+        None => return None,
+    };
+    Some(format!("{value}{tail}"))
 }
 
 /// Returns true only for heredocs that redirect to files (the dangerous pattern).

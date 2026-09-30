@@ -701,6 +701,47 @@ fn a_download_into_the_project_is_still_blocked() {
     }
 }
 
+/// #1953: the refusal recommends an absolute scratch path, so the same path
+/// spelled through a variable the command itself set must pass too. A
+/// variable this cannot follow still leaves the target refused.
+#[test]
+fn a_download_target_through_a_literal_variable_is_judged_where_it_lands() {
+    for cmd in [
+        // The reporter's form.
+        "D=/private/tmp/claude-502/s/scratchpad/vp; curl -fsSL https://e/x -o $D/install.sh; wc -l $D/install.sh",
+        "D=/tmp/x && curl -sL -o ${D}/shot.png https://e/x",
+        "export D=\"/tmp/with space\"; curl -sL -o \"$D/shot.png\" https://e/x",
+    ] {
+        assert!(
+            download_to_file_reason(cmd).is_none(),
+            "a literal scratch variable must resolve: {cmd}"
+        );
+    }
+    for cmd in [
+        // Assigned to a project path: resolved, and refused on the destination.
+        "D=/Users/me/project; curl -sL -o $D/shot.png https://e/x",
+        // Never assigned, or assigned where it may not take effect.
+        "curl -sL -o $D/shot.png https://e/x",
+        "true && D=/tmp; curl -sL -o $D/shot.png https://e/x",
+        "D=/tmp | curl -sL -o $D/shot.png https://e/x",
+        // Not a literal, or rebound after the assignment.
+        "D=$(mktemp -d); curl -sL -o $D/shot.png https://e/x",
+        "D=/tmp; read D; curl -sL -o $D/shot.png https://e/x",
+        // A variable glued to more name characters is a different variable.
+        "D=/tmp; curl -sL -o $Dx/shot.png https://e/x",
+    ] {
+        assert!(
+            download_to_file_reason(cmd).is_some(),
+            "must stay refused: {cmd}"
+        );
+    }
+    let msg = validate_command("curl -sL -o $UNSET/shot.png https://e/x").expect("blocked");
+    assert!(
+        msg.contains("literal path"),
+        "the refusal must say which spellings it can resolve: {msg}"
+    );
+}
+
 /// The refusal has to name a route that works for the payload at hand.
 /// Both suggested fallbacks were text-only, so for an image the message
 /// left native Bash as the only way forward.
@@ -829,6 +870,36 @@ fn redirect_refusal_names_the_destination_not_a_size() {
         .is_none(),
         "a scratch capture must stay allowed regardless of payload size"
     );
+}
+
+/// #1946: a destination outside the project — and outside every root — is
+/// refused like a project path, so the refusal must not call the rule
+/// "into a project path". The reporter believed that wording, tried another
+/// non-project path and hit the identical refusal. Both the redirect and the
+/// `tee` refusal state the rule that fires and name the configured escape.
+#[test]
+fn capture_refusals_state_the_rule_that_fires_outside_the_project() {
+    let allow = vec!["/tmp".to_string()];
+    for cmd in [
+        "echo probe > /Users/me/Desktop/probe.txt",
+        "echo probe | tee /Users/me/Desktop/probe.txt",
+    ] {
+        let msg = validate_command_with_write_allow_paths(cmd, &allow, Some("/Users/me/project"))
+            .expect("a non-scratch destination outside the project is refused");
+        assert!(
+            !msg.contains("into a project path")
+                && !msg.contains("the destination is inside the project"),
+            "the rule must not be scoped to the project: {msg}"
+        );
+        assert!(
+            msg.contains("write_allow_paths") && msg.contains("/tmp"),
+            "name the scratch paths and the configured escape: {msg}"
+        );
+        assert!(
+            msg.contains("/Users/me/Desktop/probe.txt"),
+            "name the destination: {msg}"
+        );
+    }
 }
 
 /// The target is reported verbatim, so a caller can match it against the
