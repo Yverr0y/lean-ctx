@@ -150,11 +150,90 @@ pub fn identity(pid: u32) -> Option<ProcessIdentity> {
     {
         windows_process_identity(pid)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    #[cfg(target_os = "freebsd")]
+    {
+        freebsd_process_identity(pid)
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "freebsd",
+        windows
+    )))]
     {
         let _ = pid;
         None
     }
+}
+
+/// #1947: `kern.proc.pid.<pid>` carries the process start time (`ki_start`),
+/// which a reused PID cannot share, and `kern.proc.pathname.<pid>` the
+/// executable. Without this FreeBSD fell into the fail-closed branch above,
+/// and agent-bus registration refused every tool call.
+#[cfg(target_os = "freebsd")]
+fn freebsd_process_identity(pid: u32) -> Option<ProcessIdentity> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+
+    let mut info = std::mem::MaybeUninit::<libc::kinfo_proc>::zeroed();
+    let mut info_len = std::mem::size_of::<libc::kinfo_proc>();
+    let mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    // SAFETY: `mib` holds four valid ints, `info` is a writable buffer of
+    // `info_len` bytes, and no new value is written.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_ptr(),
+            4,
+            info.as_mut_ptr().cast(),
+            &mut info_len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if rc != 0 || info_len != std::mem::size_of::<libc::kinfo_proc>() {
+        return None;
+    }
+    // SAFETY: sysctl filled the full structure (checked above).
+    let info = unsafe { info.assume_init() };
+    if info.ki_pid != pid {
+        return None;
+    }
+    let start_marker = u64::try_from(info.ki_start.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000)?
+        .checked_add(u64::try_from(info.ki_start.tv_usec).ok()?)?;
+
+    let mut path = [0_u8; libc::PATH_MAX as usize];
+    let mut path_len = path.len();
+    let mib = [
+        libc::CTL_KERN,
+        libc::KERN_PROC,
+        libc::KERN_PROC_PATHNAME,
+        pid,
+    ];
+    // SAFETY: `path` is a writable buffer of `path_len` bytes.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_ptr(),
+            4,
+            path.as_mut_ptr().cast(),
+            &mut path_len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if rc != 0 || path_len == 0 {
+        return None;
+    }
+    // The returned length includes the trailing NUL.
+    let bytes = path.get(..path_len)?;
+    let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(ProcessIdentity {
+        start_marker,
+        executable: String::from_utf8_lossy(bytes).into_owned(),
+    })
 }
 
 /// True only when the live process still has the identity captured at
