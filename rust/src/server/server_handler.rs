@@ -207,6 +207,7 @@ impl ServerHandler for LeanCtxServer {
                     }
                 }
                 crate::hooks::refresh_installed_hooks();
+                crate::cli::refresh_installed_shell_hooks();
                 crate::core::version_check::check_background();
                 // Enforce the on-disk budget: prune accumulated quarantined BM25
                 // indexes and cap the archive FTS DB (#2364). Silent (tracing

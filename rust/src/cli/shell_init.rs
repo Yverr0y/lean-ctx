@@ -6,6 +6,10 @@ macro_rules! qprintln {
     };
 }
 
+mod hook_refresh;
+pub use hook_refresh::refresh_installed_shell_hooks;
+use hook_refresh::write_lc_path_shims;
+
 pub fn print_hook_stdout(shell: &str) {
     let binary = crate::core::portable_binary::stable_shell_binary(
         &crate::core::portable_binary::resolve_portable_binary(),
@@ -788,114 +792,6 @@ fi
     }
 }
 
-/// Directories for the `_lc`/`_lc_compress` PATH shims, best first. A shim
-/// only works in a directory that is on `PATH`, and `current_exe`'s directory
-/// often is not (#1851): package managers keep the binary in a versioned
-/// directory (scoop `apps/<ver>`, Homebrew `Cellar`, npm `node_modules`, mise
-/// `installs`) and put a symlink or launcher on `PATH`. So, in order: the
-/// running binary's directory when it is on `PATH`, every `PATH` directory
-/// holding a `lean-ctx` launcher, then `~/.local/bin` when it is on `PATH`.
-fn lc_shim_dirs(
-    current_exe: Option<&std::path::Path>,
-    path_dirs: &[std::path::PathBuf],
-    home: Option<&std::path::Path>,
-) -> Vec<std::path::PathBuf> {
-    use crate::core::portable_binary::{dir_on_path, launchers_on_path};
-
-    let exe_dir = current_exe
-        .and_then(std::path::Path::parent)
-        .filter(|d| dir_on_path(d, path_dirs))
-        .map(std::path::Path::to_path_buf);
-    let launcher_dirs = launchers_on_path(path_dirs)
-        .into_iter()
-        .filter_map(|p| p.parent().map(std::path::Path::to_path_buf));
-    let user_bin = home
-        .map(|h| h.join(".local").join("bin"))
-        .filter(|d| dir_on_path(d, path_dirs));
-
-    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-    for dir in exe_dir.into_iter().chain(launcher_dirs).chain(user_bin) {
-        if !dirs.contains(&dir) {
-            dirs.push(dir);
-        }
-    }
-    dirs
-}
-
-/// Body of a `_lc`/`_lc_compress` PATH shim. Mirrors the hook's shell function
-/// of the same name: honor the disable switches, pass through raw for a
-/// non-TTY non-agent shell, otherwise route through the binary and fall back to
-/// running the command directly if the binary itself cannot exec (126/127).
-fn shim_script(name: &str, binary: &str, flag: &str) -> String {
-    format!(
-        "#!/bin/sh\n\
-         # lean-ctx PATH fallback for the `{name}` shell function -- DO NOT EDIT.\n\
-         # Shell resolves alias -> function -> PATH, so the hook's shell function\n\
-         # shadows this whenever it is loaded (identical behavior there). This runs\n\
-         # only where the function is absent: non-interactive subshells, scripts,\n\
-         # xargs/find -exec, a pipeline's outer shell, and agent harnesses that\n\
-         # snapshot+replay the shell and drop the function but keep the aliases\n\
-         # that call it. Without it those contexts fail `{name}: command not found`.\n\
-         if [ -n \"${{LEAN_CTX_DISABLED:-}}\" ] || [ -n \"${{LEAN_CTX_NO_HOOK:-}}\" ]; then\n\
-         \texec \"$@\"\n\
-         fi\n\
-         if [ ! -t 1 ] && [ -z \"${{LEAN_CTX_AGENT:-}}\" ] && [ -z \"${{CURSOR_AGENT:-}}\" ] && [ -z \"${{CODEX_CLI_SESSION:-}}\" ] \\\n\
-         \t&& [ -z \"${{CLAUDECODE:-}}\" ] && [ -z \"${{CODEBUDDY:-}}\" ] && [ -z \"${{GEMINI_SESSION:-}}\" ]; then\n\
-         \texec \"$@\"\n\
-         fi\n\
-         '{binary}' {flag} \"$@\"\n\
-         _lc_rc=$?\n\
-         if [ \"$_lc_rc\" -eq 127 ] || [ \"$_lc_rc\" -eq 126 ]; then\n\
-         \texec \"$@\"\n\
-         fi\n\
-         exit \"$_lc_rc\"\n"
-    )
-}
-
-/// Write the `_lc`/`_lc_compress` PATH shims into `dir` (executable on Unix).
-/// True when both were written.
-fn write_lc_path_shims_in(dir: &std::path::Path, binary: &str) -> bool {
-    let mut ok = true;
-    for (name, flag) in [("_lc", "-t"), ("_lc_compress", "-c")] {
-        let path = dir.join(name);
-        if let Err(e) = std::fs::write(&path, shim_script(name, binary, flag)) {
-            tracing::debug!("could not write shim {}: {e}", path.display());
-            ok = false;
-            continue;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
-        }
-    }
-    ok
-}
-
-/// Install `_lc`/`_lc_compress` fallback executables on `PATH` so aliases never
-/// break when the shell function is unavailable (see [`shim_script`]).
-/// Self-contained: depends on no env wiring (BASH_ENV/env.sh) or snapshot
-/// fidelity, and the same-named function shadows it where the hook is loaded.
-/// Written to the first writable directory of [`lc_shim_dirs`].
-fn write_lc_path_shims(binary: &str) {
-    let current_exe = std::env::current_exe().ok();
-    let candidates = lc_shim_dirs(
-        current_exe.as_deref(),
-        &crate::core::portable_binary::path_dirs(),
-        dirs::home_dir().as_deref(),
-    );
-    if candidates
-        .iter()
-        .any(|dir| write_lc_path_shims_in(dir, binary))
-    {
-        return;
-    }
-    tracing::warn!(
-        "could not write the _lc/_lc_compress shims to a PATH directory; \
-         aliases fail where the shell function is unavailable"
-    );
-}
-
 fn print_docker_env_hints(is_zsh: bool) {
     if is_zsh || !crate::shell::is_container() {
         return;
@@ -986,93 +882,6 @@ fn remove_lean_ctx_block_legacy(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn lc_shim_script_is_self_contained_fallback() {
-        let s = shim_script("_lc", "/usr/bin/lean-ctx", "-t");
-        assert!(s.starts_with("#!/bin/sh\n"), "needs a shebang: {s}");
-        assert!(s.contains("'/usr/bin/lean-ctx' -t \"$@\""), "{s}");
-        assert!(s.contains("exec \"$@\""), "{s}");
-        assert!(s.contains("CLAUDECODE"), "{s}");
-        assert!(s.contains("LEAN_CTX_DISABLED"), "{s}");
-    }
-
-    #[test]
-    fn lc_compress_shim_uses_compress_flag() {
-        let s = shim_script("_lc_compress", "/usr/bin/lean-ctx", "-c");
-        assert!(s.contains("'/usr/bin/lean-ctx' -c \"$@\""), "{s}");
-    }
-
-    #[test]
-    fn write_lc_path_shims_writes_both_executables() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        assert!(write_lc_path_shims_in(tmp.path(), "/usr/bin/lean-ctx"));
-        for name in ["_lc", "_lc_compress"] {
-            assert!(tmp.path().join(name).exists(), "missing shim {name}");
-        }
-    }
-
-    #[test]
-    fn write_lc_path_shims_reports_an_unwritable_dir() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        assert!(!write_lc_path_shims_in(
-            &tmp.path().join("missing"),
-            "/usr/bin/lean-ctx"
-        ));
-    }
-
-    /// #1851: a package manager keeps the binary in a versioned directory off
-    /// PATH and puts a launcher on PATH — the shims belong next to the launcher.
-    #[cfg(unix)]
-    mod lc_shim_dirs_1851 {
-        use super::super::lc_shim_dirs;
-        use std::path::{Path, PathBuf};
-
-        fn launcher_dir(root: &Path, rel: &str) -> PathBuf {
-            let dir = root.join(rel);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("lean-ctx"), "#!/bin/sh\n").unwrap();
-            dir
-        }
-
-        #[test]
-        fn versioned_install_dir_off_path_is_skipped() {
-            let tmp = tempfile::tempdir().unwrap();
-            let apps = launcher_dir(tmp.path(), "scoop/apps/lean-ctx/3.10.2");
-            let shims = launcher_dir(tmp.path(), "scoop/shims");
-            let dirs = lc_shim_dirs(
-                Some(&apps.join("lean-ctx")),
-                &[tmp.path().join("usr/bin"), shims.clone()],
-                None,
-            );
-            assert_eq!(dirs, vec![shims]);
-        }
-
-        #[test]
-        fn exe_dir_on_path_comes_first_then_launchers_then_user_bin() {
-            let tmp = tempfile::tempdir().unwrap();
-            let home = tmp.path().join("home");
-            let user_bin = home.join(".local/bin");
-            std::fs::create_dir_all(&user_bin).unwrap();
-            let brew = launcher_dir(tmp.path(), "opt/homebrew/bin");
-            let exe_dir = launcher_dir(tmp.path(), "exe");
-            let dirs = lc_shim_dirs(
-                Some(&exe_dir.join("lean-ctx")),
-                &[brew.clone(), user_bin.clone(), exe_dir.clone()],
-                Some(&home),
-            );
-            assert_eq!(dirs, vec![exe_dir, brew, user_bin]);
-        }
-
-        #[test]
-        fn user_bin_off_path_is_not_a_candidate() {
-            let tmp = tempfile::tempdir().unwrap();
-            let home = tmp.path().join("home");
-            std::fs::create_dir_all(home.join(".local/bin")).unwrap();
-            let dirs = lc_shim_dirs(None, &[tmp.path().join("usr/bin")], Some(&home));
-            assert!(dirs.is_empty(), "{dirs:?}");
-        }
-    }
 
     #[test]
     fn test_remove_lean_ctx_block_posix() {
