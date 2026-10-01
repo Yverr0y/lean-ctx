@@ -60,6 +60,8 @@ fn setup_bootstrap_doctor_status_json_smoke() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
+    // `bootstrap` starts a daemon under this HOME on purpose (GL #1291).
+    let _daemon = super::hermetic_env::SandboxDaemon(&home);
     let data_dir = tmp.path().join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
     let bin_dir = tmp.path().join("bin");

@@ -10,6 +10,9 @@ fn lean_ctx_bin() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_lean-ctx"));
     cmd.current_dir(env!("CARGO_MANIFEST_DIR"));
     cmd.env("LEAN_CTX_ACTIVE", "1");
+    // Tool-backed subcommands would auto-start a daemon that outlives the
+    // test and indexes the repo at ~300 % CPU on CI (GL #1291).
+    cmd.env("__LEAN_CTX_NO_DAEMON", "1");
     cmd
 }
 
