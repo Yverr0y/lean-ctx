@@ -33,6 +33,9 @@ fn ctx_read_lmd_md_returns_raw_source() {
 
     let out = Command::new(LEAN_CTX_BIN)
         .env("LEAN_CTX_DATA_DIR", data_dir.path())
+        // A tool-backed CLI read auto-starts a daemon that outlives the test
+        // (GL #1291); the raw-read contract is the same on the standalone path.
+        .env("__LEAN_CTX_NO_DAEMON", "1")
         // `lean-ctx read` is jailed to the project root (#1903).
         .current_dir(fixture.path())
         .args(["read", f.to_str().unwrap(), "--mode", "full", "--fresh"])
