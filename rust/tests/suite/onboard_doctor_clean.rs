@@ -9,23 +9,6 @@
 
 use std::process::Command;
 
-/// Stops the daemon `onboard` started (scoped to the test's data dir), even
-/// when an assertion panics mid-test.
-struct DaemonStop<'a> {
-    bin: &'a str,
-    envs: Vec<(String, String)>,
-}
-
-impl Drop for DaemonStop<'_> {
-    fn drop(&mut self) {
-        let _ = Command::new(self.bin)
-            .arg("stop")
-            .env_clear()
-            .envs(self.envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .output();
-    }
-}
-
 #[test]
 #[cfg_attr(
     windows,
@@ -72,10 +55,8 @@ fn onboard_yes_leaves_doctor_fully_green() {
         // Hermetic: doctor must not try to fetch embedding models in CI.
         ("LEAN_CTX_EMBEDDINGS_AUTO_DOWNLOAD".into(), "0".into()),
     ];
-    let _stop = DaemonStop {
-        bin,
-        envs: envs.clone(),
-    };
+    // Stops the daemon `onboard` starts, even when an assertion panics.
+    let _daemon = super::hermetic_env::SandboxDaemon(&home);
 
     let onboard = Command::new(bin)
         .args(["onboard", "--yes"])

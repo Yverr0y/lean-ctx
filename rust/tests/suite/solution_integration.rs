@@ -290,6 +290,9 @@ impl Sandbox {
             .env("LEAN_CTX_STATE_DIR", &self.state)
             .env("LEAN_CTX_CACHE_DIR", &self.cache)
             .env("LEAN_CTX_DISABLED", "1")
+            // `call` routes through the daemon and would auto-start one that
+            // outlives the test (GL #1291); the registry runs in-process instead.
+            .env("__LEAN_CTX_NO_DAEMON", "1")
             .output()
             .expect("run tool through the CLI registry")
     }

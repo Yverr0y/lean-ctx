@@ -55,6 +55,36 @@ extern "C" fn isolate_environment() {
 #[cfg_attr(windows, unsafe(link_section = ".CRT$XCU"))]
 static ISOLATE_ENVIRONMENT: extern "C" fn() = isolate_environment;
 
+/// Stops the daemon a test started under a sandbox HOME when dropped, also
+/// when an assertion panics. The daemon's pid file sits under the platform
+/// data dir derived from HOME, not under LEAN_CTX_DATA_DIR.
+///
+/// Deliberately not `lean-ctx stop`: after stopping the daemon it kills every
+/// other non-MCP `lean-ctx` process on the machine — the developer's own
+/// daemon and proxy, and other sessions' CLI calls.
+pub(crate) struct SandboxDaemon<'a>(pub &'a std::path::Path);
+
+impl Drop for SandboxDaemon<'_> {
+    fn drop(&mut self) {
+        for pid_file in [
+            ".local/share/lean-ctx/daemon.pid",
+            "Library/Application Support/lean-ctx/daemon.pid",
+        ] {
+            let Ok(pid) = std::fs::read_to_string(self.0.join(pid_file)) else {
+                continue;
+            };
+            if let Ok(pid) = pid.trim().parse::<u32>() {
+                #[cfg(unix)]
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+                #[cfg(not(unix))]
+                let _ = pid;
+            }
+        }
+    }
+}
+
 #[test]
 fn constructor_isolates_the_process_before_tests_run() {
     let dir = std::env::var_os("LEAN_CTX_DATA_DIR").expect("LEAN_CTX_DATA_DIR is set");
