@@ -896,6 +896,68 @@ fn write_lc_path_shims(binary: &str) {
     );
 }
 
+/// Bring already-installed shell hooks up to this binary (#1959).
+///
+/// Only `init`, `setup`, `update` and `doctor --fix` write the hook files, so a
+/// package-manager upgrade (FreeBSD ports, AUR, Homebrew, `cargo install`)
+/// kept the hook an older build wrote — with aliases calling `_lc`, which
+/// agent shells that drop `_`-prefixed functions fail on (#1898). Called on
+/// MCP server start, next to the agent-hook refresh. Rewrites only hook files
+/// that exist and are stale, never an rc file, and does nothing when the shell
+/// hook is disabled.
+pub fn refresh_installed_shell_hooks() {
+    if crate::core::config::Config::load().shell_hook_disabled_effective() {
+        return;
+    }
+    let Some(dir) = config_artifact_dir() else {
+        return;
+    };
+    let binary = crate::core::portable_binary::stable_shell_binary(
+        &crate::core::portable_binary::resolve_portable_binary(),
+    );
+    if refresh_shell_hooks_in(&dir, &binary) {
+        let bash_binary = hook_binary_for_shell("bash", &binary);
+        if dir.join("env.sh").exists() {
+            write_env_sh_for_containers(&generate_hook_posix(&bash_binary));
+        }
+        write_lc_path_shims(&bash_binary);
+    }
+}
+
+/// Rewrite each existing `shell-hook.*` in `dir` whose content differs from
+/// what this build generates. Returns whether a bash/zsh hook was rewritten.
+fn refresh_shell_hooks_in(dir: &std::path::Path, binary: &str) -> bool {
+    let mut posix_refreshed = false;
+    for (ext, shell) in [
+        ("bash", "bash"),
+        ("zsh", "zsh"),
+        ("fish", "fish"),
+        ("ps1", "powershell"),
+    ] {
+        let path = dir.join(format!("shell-hook.{ext}"));
+        let Ok(current) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let shell_binary = hook_binary_for_shell(shell, binary);
+        let fresh = match shell {
+            "fish" => generate_hook_fish(&shell_binary),
+            "powershell" => generate_hook_powershell(&shell_binary),
+            _ => generate_hook_posix(&shell_binary),
+        };
+        if current == fresh {
+            continue;
+        }
+        match std::fs::write(&path, fresh) {
+            Ok(()) => {
+                tracing::info!("refreshed stale shell hook {}", path.display());
+                posix_refreshed |= matches!(shell, "bash" | "zsh");
+            }
+            Err(e) => tracing::debug!("could not refresh {}: {e}", path.display()),
+        }
+    }
+    posix_refreshed
+}
+
 fn print_docker_env_hints(is_zsh: bool) {
     if is_zsh || !crate::shell::is_container() {
         return;
@@ -1001,6 +1063,30 @@ mod tests {
     fn lc_compress_shim_uses_compress_flag() {
         let s = shim_script("_lc_compress", "/usr/bin/lean-ctx", "-c");
         assert!(s.contains("'/usr/bin/lean-ctx' -c \"$@\""), "{s}");
+    }
+
+    /// #1959: a hook written by an older build (aliases → `_lc`) is brought up
+    /// to date without `init`; a shell the user never set up gets no hook.
+    #[test]
+    fn stale_installed_hooks_are_refreshed_and_absent_ones_left_alone() {
+        // The generator bakes config values in; keep them stable for both calls.
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bin = "/usr/local/bin/lean-ctx";
+        let hook = tmp.path().join("shell-hook.bash");
+        std::fs::write(&hook, "alias grep='_lc grep'\n").expect("write stale hook");
+
+        assert!(refresh_shell_hooks_in(tmp.path(), bin), "stale bash hook");
+        assert_eq!(
+            std::fs::read_to_string(&hook).expect("read hook"),
+            generate_hook_posix(bin)
+        );
+        assert!(!tmp.path().join("shell-hook.zsh").exists());
+        assert!(!tmp.path().join("shell-hook.fish").exists());
+        assert!(
+            !refresh_shell_hooks_in(tmp.path(), bin),
+            "a current hook is not rewritten"
+        );
     }
 
     #[test]

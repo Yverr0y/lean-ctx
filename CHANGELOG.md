@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — shell hooks follow package-manager upgrades (#1959)
+
+- `_lc: command not found` came back after an upgrade through FreeBSD
+  ports, AUR, Homebrew or `cargo install`. Only `init`, `setup`, `update`
+  and `doctor --fix` rewrote the installed `shell-hook.*` files, so the
+  hook an older build wrote stayed in place — with aliases that call
+  `_lc`, which agent shells that drop `_`-prefixed functions cannot
+  resolve (#1898).
+- The MCP server now refreshes installed shell hooks on start, next to
+  the agent hooks. It only rewrites hook files that exist and are stale,
+  never an rc file, and skips everything when the shell hook is
+  disabled. A refreshed bash/zsh hook also refreshes `env.sh` (if
+  present) and the `_lc` PATH shims.
+
 ### Fixed — the background cloud pass no longer reverts config edits (#1934)
 
 - The daily background pass (telemetry, stats/gain sync, model pull,
