@@ -258,11 +258,12 @@ jobs:
           # cooldown; now they start seconds after the multi-threaded suite,
           # and the lean-ctx children its tests spawned can still hold the CPU.
           ps -eo pid,pcpu,etime,args --sort=-pcpu | head -8
-          # Name every survivor (HOME/data dir/cwd identify the spawning test):
-          # a test that leaks a daemon should be fixed, not just outwaited.
+          # Name every survivor (env/cwd identify the spawning test): a test
+          # that leaks a daemon should be fixed, not just outwaited. Allowlist
+          # only — the runner env must never be dumped into a public log.
           for pid in $(pgrep -f "$PWD/target/"); do
             echo "leaked $pid cwd=$(readlink /proc/$pid/cwd)" \
-              "$(tr '\0' '\n' < /proc/$pid/environ | grep -E '^(HOME|LEAN_CTX_DATA_DIR)=' | tr '\n' ' ')"
+              "$(tr '\0' '\n' < /proc/$pid/environ | grep -E '^(HOME|SHELL|_*LEAN_CTX_[A-Z0-9_]*|CARGO_[A-Z0-9_]*|RUST_[A-Z0-9_]*)=' | tr '\n' ' ')"
           done
           pkill -f "$PWD/target/" || true
           for _ in $(seq 60); do
