@@ -117,6 +117,33 @@ class SecretExpiryTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertNotIn("test-token", request.full_url)
 
+    def test_request_failures_never_echo_the_token(self):
+        # CodeQL py/clear-text-logging-sensitive-data: http.client rejects a
+        # header with a control character by raising ValueError that quotes
+        # the header value, and main() printed every ValueError to stderr —
+        # i.e. into the CI log. Both the malformed-token path and an unexpected
+        # failure inside the request must surface only a fixed message.
+        # A sentinel, deliberately not credential-shaped: the history policy
+        # gate (SEC001) refuses any commit that adds a GitHub token prefix.
+        token = "test-token-SENTINEL-1234567890"
+        with self.assertRaises(CHECKER.GateError) as malformed:
+            CHECKER.github_secrets("yvgude/lean-ctx", token + "\r\nX-Injected: 1")
+        self.assertNotIn(token, str(malformed.exception))
+
+        leak = ValueError(f"Invalid header value b'Bearer {token}'")
+        with patch.object(CHECKER.urllib.request, "urlopen", side_effect=leak):
+            with self.assertRaises(CHECKER.GateError) as failed:
+                CHECKER.github_secrets("yvgude/lean-ctx", token)
+        self.assertNotIn(token, str(failed.exception))
+        self.assertIsNone(failed.exception.__cause__)
+        self.assertTrue(failed.exception.__suppress_context__)
+
+        # A trailing newline from a token file is trimmed, not rejected.
+        with patch.object(CHECKER.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value = _Response({"secrets": []})
+            self.assertEqual(CHECKER.github_secrets("yvgude/lean-ctx", token + "\n"), {})
+            self.assertEqual(urlopen.call_args.args[0].get_header("Authorization"), f"Bearer {token}")
+
 
 if __name__ == "__main__":
     unittest.main()

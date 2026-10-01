@@ -4,11 +4,11 @@
 import argparse
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 import re
 import sys
-import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -164,8 +164,15 @@ def github_secrets(repo, token):
     """Fetch GitHub Actions secret metadata without exposing token material."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise GateError("repository must be OWNER/REPOSITORY")
+    # A token read from a file or env var often carries a trailing newline.
+    token = (token or "").strip()
     if not token:
         raise GateError("GitHub token is required")
+    # http.client rejects a header with whitespace or control characters by
+    # raising ValueError("Invalid header value b'Bearer <token>…'"), which
+    # quotes the token. Refuse it here, with a message that never echoes it.
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in token):
+        raise GateError("GitHub token contains whitespace or control characters")
     url = f"https://api.github.com/repos/{repo}/actions/secrets?per_page=100"
     request = urllib.request.Request(
         url,
@@ -179,8 +186,12 @@ def github_secrets(repo, token):
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.load(response)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
-        raise GateError("GitHub secret metadata request failed") from exc
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        # Any failure while sending the request may carry the Authorization
+        # header in its text; only a fixed message leaves this function.
+        # (URLError, HTTPError and TimeoutError are OSError subclasses;
+        # JSONDecodeError is a ValueError.)
+        raise GateError(f"GitHub secret metadata request failed ({type(exc).__name__})") from None
     if not isinstance(payload, dict) or not isinstance(payload.get("secrets"), list):
         raise GateError("GitHub secret metadata response is invalid")
     values = {}
