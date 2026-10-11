@@ -86,7 +86,7 @@ export type Board = {
   leanRunning: number
   proof?: Proof
   /** The session's running total over time; reset when the session changes. */
-  history?: { sessionId: string; points: { at: number; saved: number }[] }
+  history?: { sessionId: string; points: { at: number; saved: number; raw?: number }[] }
   feed: FeedItem[]
   /** Sources Claude saw this conversation, keyed by path / pattern / command. */
   sources: Record<string, SourceStat>
