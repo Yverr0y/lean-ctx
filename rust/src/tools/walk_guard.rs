@@ -99,8 +99,22 @@ mod tests {
         let project = base.path().join("proj");
         std::fs::create_dir_all(project.join(".git")).unwrap();
         let project = crate::core::pathutil::safe_canonicalize(&project).unwrap();
-        let (root, note) = narrow_to_project("/", &project.to_string_lossy())
-            .expect("the filesystem root contains every project");
+        // The project's own filesystem root: `/`, or `C:\` on Windows.
+        let fs_root = project
+            .ancestors()
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let (root, note) =
+            narrow_to_project(&fs_root, &project.to_string_lossy()).unwrap_or_else(|| {
+                panic!(
+                    "{fs_root} contains {}: requested={:?} usable={}",
+                    project.display(),
+                    super::comparable(&fs_root),
+                    super::usable_project(&project.to_string_lossy())
+                )
+            });
         assert_eq!(std::path::Path::new(&root), project);
         assert!(note.contains("too broad"), "{note}");
     }

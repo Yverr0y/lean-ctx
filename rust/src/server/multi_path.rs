@@ -316,14 +316,21 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(project.path().join(".git")).unwrap();
         let root = crate::core::pathutil::safe_canonicalize(project.path()).unwrap();
+        // The project's own filesystem root: `/`, or `C:\` on Windows.
+        let fs_root = root
+            .ancestors()
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let mut ctx = test_ctx();
         ctx.project_root = root.to_string_lossy().into_owned();
         ctx.path_errors.insert(
             "path".to_string(),
-            "path escapes project root: / (root: …)".to_string(),
+            format!("path escapes project root: {fs_root} (root: …)"),
         );
         let mut args = Map::new();
-        args.insert("path".to_string(), json!("/"));
+        args.insert("path".to_string(), json!(fs_root));
         let resolved = resolve_tool_paths(&args, &ctx).expect("narrowed, not refused");
         assert_eq!(std::path::Path::new(&resolved.roots[0]), root);
         assert!(

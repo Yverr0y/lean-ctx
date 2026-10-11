@@ -284,11 +284,22 @@ export const register: Register = (on, options) => {
       return addWatchContext(result, job);
     }
 
-    if (SHELL_TOOLS.has(leanCtxTool.tool) && fields.background_action === "status") {
+    const backgroundAction = readString(fields, "background_action");
+    if (SHELL_TOOLS.has(leanCtxTool.tool) && (backgroundAction === "status" || backgroundAction === "cancel")) {
       const jobId = readString(fields, "job_id");
-      const job = jobId ? watchedJobs.get(watchKey(leanCtxTool.server, jobId)) : undefined;
+      const key = jobId ? watchKey(leanCtxTool.server, jobId) : undefined;
+      const job = key ? watchedJobs.get(key) : undefined;
       const result = await next(event);
-      return job ? addWatchContext(result, job) : result;
+      if (!job || !key || !jobId) return result;
+      // The model has now seen this job's terminal state itself: stop
+      // watching it, or the next watcher tick wakes it with the same result
+      // again and costs it a whole extra turn.
+      if (toolCallJobStatus(result, jobId).state === "terminal") {
+        if (watchedJobs.get(key) === job) watchedJobs.delete(key);
+        stopWatcherWhenIdle();
+        return result;
+      }
+      return addWatchContext(result, job);
     }
 
     return next(event);
@@ -609,7 +620,17 @@ function formatLostNotice(lost: WatchJob[]): string {
 }
 
 function inspectJobStatus(response: McpToolResult, jobId: string): JobStatus {
-  const fields = readShellFields(response);
+  return jobStatus(readShellFields(response), jobId);
+}
+
+// The model's own ctx_shell call reaches `tool.call` as the host's result
+// wrapper (`{ result, text }`), not as the raw MCP response the watcher polls.
+function toolCallJobStatus(result: ToolCallResult, jobId: string): JobStatus {
+  if ("deny" in result) return { state: "unknown" };
+  return jobStatus(readShellFields(result.result, result.text), jobId);
+}
+
+function jobStatus(fields: JsonRecord, jobId: string): JobStatus {
   if (fields.jobId !== undefined && fields.jobId !== jobId) return { state: "unknown" };
   const state = readString(fields, "state")?.toLowerCase();
   if (state === "running") return { state: "running" };
