@@ -315,7 +315,7 @@ mod tests {
     fn broad_explicit_path_narrows_to_the_session_project() {
         let project = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(project.path().join(".git")).unwrap();
-        let root = project.path().canonicalize().unwrap();
+        let root = crate::core::pathutil::safe_canonicalize(project.path()).unwrap();
         let mut ctx = test_ctx();
         ctx.project_root = root.to_string_lossy().into_owned();
         ctx.path_errors.insert(

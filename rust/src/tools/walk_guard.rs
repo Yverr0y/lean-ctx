@@ -31,7 +31,9 @@ pub(crate) fn deny_unsafe_walk_root(dir: &str) -> Option<String> {
 /// spelling when the path does not exist (canonicalize needs a real path).
 fn comparable(path: &str) -> std::path::PathBuf {
     let expanded = crate::core::pathjail::expand_user_path(path);
-    std::fs::canonicalize(&expanded)
+    // `safe_canonicalize` strips Windows' `\\?\` prefix, which the scan-root
+    // check does not understand.
+    crate::core::pathutil::safe_canonicalize(&expanded)
         .or_else(|_| std::path::absolute(&expanded))
         .unwrap_or(expanded)
 }
@@ -96,7 +98,7 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let project = base.path().join("proj");
         std::fs::create_dir_all(project.join(".git")).unwrap();
-        let project = project.canonicalize().unwrap();
+        let project = crate::core::pathutil::safe_canonicalize(&project).unwrap();
         let (root, note) = narrow_to_project("/", &project.to_string_lossy())
             .expect("the filesystem root contains every project");
         assert_eq!(std::path::Path::new(&root), project);
