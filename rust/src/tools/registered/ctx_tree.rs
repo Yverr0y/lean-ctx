@@ -48,7 +48,11 @@ impl McpTool for CtxTreeTool {
         let show_hidden = get_bool(args, "show_hidden").unwrap_or(false);
         let respect_gitignore = get_bool(args, "respect_gitignore").unwrap_or(true);
 
-        let mut combined = String::new();
+        let mut combined = resolved
+            .note
+            .as_ref()
+            .map(|note| format!("{note}\n"))
+            .unwrap_or_default();
         let mut total_original = 0;
 
         for root in &resolved.roots {

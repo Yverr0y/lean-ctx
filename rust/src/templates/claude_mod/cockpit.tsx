@@ -31,6 +31,8 @@ const PACKET_OUT_MS = 1_600
 const ACTIVE_MS = 12 * 3_600_000
 const TURNS_KEPT = 60
 const HISTORY_KEPT = 480
+// The saving curve: three rows of eighth blocks (24 levels) and an axis line.
+const CURVE_ROWS = 3
 const FEED_KEPT = 30
 const FEED_SHOWN = 5
 const SOURCES_KEPT = 200
@@ -291,26 +293,66 @@ function mixCells(cols: number, counts: Record<Depth, number>): string {
 
 const LEVELS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 
-// Area chart: filled columns rising from blue field to ice; the newest column bright.
-function areaCells(cols: number, rows: number, values: readonly number[], pulse: number): string {
+export type CurvePoint = { at: number; saved: number; raw?: number }
+
+// The value a running total held at time `t`: the last sample at or before it.
+function stepAt(points: readonly CurvePoint[], t: number, pick: (p: CurvePoint) => number | undefined): number {
+  let value = 0
+  for (const p of points) {
+    if (p.at > t) break
+    value = pick(p) ?? value
+  }
+  return value
+}
+
+// The saving curve, true to time: x runs from the session's first sample to
+// now, y from zero to the largest total, so a column is a slice of wall time
+// and a height is a token count. The raw total sits behind as a dim envelope;
+// "kept out" fills in front of it, rising from blue field to ice, so the gap
+// between them is what Claude still received. Columns in which lean-ctx kept
+// tokens out are lit; the newest one breathes while Claude works.
+export function curveCells(cols: number, rows: number, points: readonly CurvePoint[], now: number, pulse: number): string {
   const g = new Grid(cols, rows)
-  const shown = values.slice(-cols)
-  const min = Math.min(...shown)
-  const max = Math.max(min + 1, ...shown)
-  const offset = cols - shown.length
-  for (let x = 0; x < cols; x++) g.set(x, rows - 1, '▁', HAIRLINE)
-  shown.forEach((v, i) => {
-    // A running total: scale from the window's floor so its growth reads.
-    const height = Math.max(1, ((v - min) / (max - min)) * (rows * 8 - 1) + 1)
-    const isLast = i === shown.length - 1
+  const start = points[0]?.at ?? now
+  const span = Math.max(60_000, now - start)
+  const timeAt = (x: number) => start + ((x + 1) / cols) * span
+  const saved = Array.from({ length: cols }, (_, x) => stepAt(points, timeAt(x), p => p.saved))
+  const raw = Array.from({ length: cols }, (_, x) => Math.max(saved[x] ?? 0, stepAt(points, timeAt(x), p => p.raw)))
+  const top = Math.max(1, ...raw, ...saved)
+  const steps = rows * 8
+  const eighths = (v: number) => (v <= 0 ? 0 : Math.max(1, Math.round((v / top) * steps)))
+  const envelope = mix(PANEL, BLUE_FIELD, 0.7)
+  for (let x = 0; x < cols; x++) {
+    const keptH = eighths(saved[x] ?? 0)
+    const rawH = eighths(raw[x] ?? 0)
+    const gained = (saved[x] ?? 0) > (x > 0 ? (saved[x - 1] ?? 0) : 0)
+    const isLast = x === cols - 1
     for (let r = 0; r < rows; r++) {
-      const level = Math.min(8, Math.max(0, Math.round(height - r * 8)))
-      if (level === 0) continue
-      const base = ramp(DATA, (r * 8 + level) / (rows * 8))
-      g.set(offset + i, rows - 1 - r, LEVELS[level - 1] ?? '█', isLast ? mix(base, FOREGROUND, 0.4 + pulse * 0.6) : base)
+      const y = rows - 1 - r
+      const kept = Math.min(8, Math.max(0, keptH - r * 8))
+      const behind = Math.min(8, Math.max(0, rawH - r * 8))
+      if (kept === 0 && behind === 0) {
+        if (r === 0) g.set(x, y, '▁', HAIRLINE)
+        continue
+      }
+      let color = ramp(DATA, (r * 8 + kept) / steps)
+      if (gained && r * 8 + kept >= keptH) color = mix(color, ICE, 0.55)
+      if (isLast) color = mix(color, FOREGROUND, 0.25 + pulse * 0.55)
+      // A partial "kept" block sits on the raw envelope only where raw fills
+      // the whole cell; a cell cannot show two partial heights, and drawing
+      // the envelope there would overstate raw.
+      const bg = behind >= 8 ? envelope : DEFAULT_BG
+      if (kept === 0) g.set(x, y, LEVELS[behind - 1] ?? '█', envelope)
+      else g.set(x, y, LEVELS[kept - 1] ?? '█', color, kept < 8 ? bg : DEFAULT_BG)
     }
-  })
+  }
   return g.encode()
+}
+
+// What a stretch of the curve adds: the gain over the last `windowMs`.
+export function recentGain(points: readonly CurvePoint[], now: number, windowMs: number): number {
+  const latest = points.at(-1)?.saved ?? 0
+  return Math.max(0, latest - stepAt(points, now - windowMs, p => p.saved))
 }
 
 // ── formatting (lean-ctx's own style: 49.1K, 1.2M) ─────────────────────────
@@ -590,8 +632,9 @@ async function refresh($: EngineInterface) {
       const same = x.history?.sessionId === snap.sessionId ? x.history.points : []
       const last = same.at(-1)
       // A point per change, and one a minute while flat, so time stays honest.
-      const isNew = !last || last.saved !== snap.tokensSaved || at - last.at >= 60_000
-      const points = isNew ? [...same, { at, saved: snap.tokensSaved }].slice(-HISTORY_KEPT) : same
+      const isNew =
+        !last || last.saved !== snap.tokensSaved || last.raw !== snap.tokensInput || at - last.at >= 60_000
+      const points = isNew ? [...same, { at, saved: snap.tokensSaved, raw: snap.tokensInput }].slice(-HISTORY_KEPT) : same
       return {
         ...x,
         snap,
@@ -1175,7 +1218,23 @@ export function registerCockpit(on: On): void {
       <Raster key="figure" columns={figCols} rows={FIGURE_ROWS} cells={figureCells(figure, figCols, tick / 90, isCounting ? 0.45 : 0)} />
     )
     const points = b.history?.sessionId === s?.sessionId ? (b.history?.points ?? []) : []
-    const values = points.map(pt => pt.saved)
+    const nowMs = Date.now()
+    const gain10 = recentGain(points, nowMs, 10 * 60_000)
+    const axis = (
+      <Box width={inner} justifyContent="space-between">
+        <Text color={sec}>{points.length > 0 ? `${span(nowMs - (points[0]?.at ?? nowMs))} ago` : ''}</Text>
+        <Text>
+          <Text color={hex(SIGNATURE)}>█</Text>
+          <Text color={sec}> kept out  </Text>
+          <Text color={hex(mix(PANEL, BLUE_FIELD, 0.7))}>█</Text>
+          <Text color={sec}> raw</Text>
+        </Text>
+        <Text color={sec}>
+          {gain10 > 0 ? <Text color={hex(ICE)}>+{compact(gain10)} </Text> : ''}
+          {gain10 > 0 ? '10m · now' : 'now'}
+        </Text>
+      </Box>
+    )
     const ctxFrac = (b.contextPct ?? 0) / 100
     const budgetW = Math.max(8, inner - 16 - 6)
     const tokens: Part[] = [
@@ -1185,12 +1244,15 @@ export function registerCockpit(on: On): void {
       GAP,
       {
         node:
-          values.length >= 2 ? (
-            <Raster key="history" columns={inner} rows={2} cells={areaCells(inner, 2, values, b.isWorking ? pulse : 0)} />
+          points.length >= 2 ? (
+            <Box flexDirection="column">
+              <Raster key="history" columns={inner} rows={CURVE_ROWS} cells={curveCells(inner, CURVE_ROWS, points, nowMs, b.isWorking ? pulse : 0)} />
+              {axis}
+            </Box>
           ) : (
             <Text color={sec}>{'The curve starts with the next lean-ctx call.\n'}</Text>
           ),
-        rows: 2,
+        rows: points.length >= 2 ? CURVE_ROWS + 1 : 2,
       },
       GAP,
       {

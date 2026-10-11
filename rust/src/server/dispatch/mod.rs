@@ -178,6 +178,8 @@ impl LeanCtxServer {
         if let Some(tool) = self.registry.as_ref().and_then(|r| r.get_arc(name)) {
             let empty = serde_json::Map::new();
             let args_map = args.unwrap_or(&empty);
+            let aliased = canonicalize_arg_aliases(tool.as_ref(), args_map);
+            let args_map = aliased.as_ref().unwrap_or(args_map);
             let project_root = {
                 let session = self.session.read().await;
                 session.project_root.clone().unwrap_or_default()
@@ -701,6 +703,115 @@ const REFERENCE_THRESHOLD: usize = 4000;
 const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 120;
 
 use super::tool_trait::PATH_LIKE_KEYS;
+
+/// Spellings agents carry over from other tool sets (Claude Code's
+/// `file_path`, shell tools' `cmd`) for a parameter a tool calls differently.
+const ARG_ALIASES: &[(&str, &[&str])] = &[
+    ("path", &["file_path", "filePath", "file", "filename"]),
+    ("command", &["cmd"]),
+];
+
+/// Renames an alias to the canonical parameter when the tool declares the
+/// canonical name but not the alias, and the caller sent only the alias. A
+/// tool that declares the alias itself keeps its own meaning for it, and an
+/// explicit canonical value always wins. `None` when nothing changed, so the
+/// common call borrows the original map.
+pub(crate) fn canonicalize_arg_aliases(
+    tool: &dyn McpTool,
+    args: &serde_json::Map<String, Value>,
+) -> Option<serde_json::Map<String, Value>> {
+    let pending: Vec<(&str, &str)> = ARG_ALIASES
+        .iter()
+        .filter(|(canonical, _)| !args.contains_key(*canonical))
+        .filter_map(|(canonical, aliases)| {
+            aliases
+                .iter()
+                .find(|alias| args.get(**alias).is_some_and(Value::is_string))
+                .map(|alias| (*canonical, *alias))
+        })
+        .collect();
+    if pending.is_empty() {
+        return None;
+    }
+    let def = tool.tool_def();
+    let declared = def
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)?;
+    let mut out = args.clone();
+    let mut changed = false;
+    for (canonical, alias) in pending {
+        if declared.contains_key(canonical)
+            && !declared.contains_key(alias)
+            && let Some(value) = out.remove(alias)
+        {
+            out.insert(canonical.to_string(), value);
+            changed = true;
+        }
+    }
+    changed.then_some(out)
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+
+    fn tool(name: &str) -> Arc<dyn McpTool> {
+        crate::server::registry::build_registry()
+            .get_arc(name)
+            .unwrap_or_else(|| panic!("{name} registered"))
+    }
+
+    fn map(v: Value) -> serde_json::Map<String, Value> {
+        match v {
+            Value::Object(m) => m,
+            other => panic!("expected an object, got {other}"),
+        }
+    }
+
+    #[test]
+    fn file_path_becomes_path_for_ctx_read() {
+        let out = canonicalize_arg_aliases(
+            tool("ctx_read").as_ref(),
+            &map(serde_json::json!({"file_path": "src/main.rs", "mode": "map"})),
+        )
+        .expect("alias renamed");
+        assert_eq!(out.get("path").and_then(Value::as_str), Some("src/main.rs"));
+        assert!(!out.contains_key("file_path"));
+    }
+
+    #[test]
+    fn cmd_becomes_command_for_ctx_shell() {
+        let out = canonicalize_arg_aliases(
+            tool("ctx_shell").as_ref(),
+            &map(serde_json::json!({"cmd": "git status"})),
+        )
+        .expect("alias renamed");
+        assert_eq!(
+            out.get("command").and_then(Value::as_str),
+            Some("git status")
+        );
+    }
+
+    #[test]
+    fn declared_alias_and_explicit_canonical_are_untouched() {
+        // ctx_search declares `file_path` itself (#846).
+        assert!(
+            canonicalize_arg_aliases(
+                tool("ctx_search").as_ref(),
+                &map(serde_json::json!({"pattern": "x", "file_path": "a.rs"})),
+            )
+            .is_none()
+        );
+        assert!(
+            canonicalize_arg_aliases(
+                tool("ctx_read").as_ref(),
+                &map(serde_json::json!({"path": "a.rs", "file_path": "b.rs"})),
+            )
+            .is_none()
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

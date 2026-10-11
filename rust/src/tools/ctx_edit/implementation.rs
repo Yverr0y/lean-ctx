@@ -319,6 +319,32 @@ pub fn run_io(params: &EditParams, last_mode: &str) -> (String, CacheEffect) {
         }
     }
 
+    // Same block at a uniformly different indentation, in exactly one place.
+    if let Some(found) = super::reindent::find(content, old_str, new_str) {
+        let line_sep = if uses_crlf { "\r\n" } else { "\n" };
+        let replacement = adapt_new_string_to_line_sep(&found.replacement, line_sep);
+        let args = ReplaceArgs {
+            content,
+            old_str: &found.span,
+            new_str: &replacement,
+            occurrences: content.matches(found.span.as_str()).count(),
+            replace_all: params.replace_all,
+            old_tokens: count_tokens(&params.old_string),
+            new_tokens: count_tokens(&params.new_string),
+        };
+        let (out, effect) = do_replace(path, &pre, params, cap, &args);
+        if out.starts_with("ERROR") {
+            return (out, effect);
+        }
+        return (
+            format!(
+                "note: old_string matched with different indentation — applied at the \
+                 file's indentation.\n{out}"
+            ),
+            effect,
+        );
+    }
+
     if content.contains(new_str) {
         return (
             format!(

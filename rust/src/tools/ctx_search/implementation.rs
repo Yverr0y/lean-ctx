@@ -216,7 +216,8 @@ fn search_compiled_pattern(
 
     let root = Path::new(dir);
     if !root.exists() {
-        return SearchOutcome::error(format!("ERROR: {dir} does not exist"));
+        let hint = crate::core::path_suggest::hint(root);
+        return SearchOutcome::error(format!("ERROR: {dir} does not exist{hint}"));
     }
     // Broad-root guard (#356 class): with cwd == $HOME a defaulted `path`
     // would walk the whole home dir and trip macOS TCC privacy prompts.

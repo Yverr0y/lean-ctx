@@ -208,10 +208,20 @@ pub(crate) fn run_call(args: &[String]) -> Result<String, CallError> {
         _ => return Err(CallError::BadJson("expected a JSON object".into())),
     };
 
+    let registry = build_registry();
+    let tool = registry
+        .get(&parsed.tool)
+        .ok_or_else(|| CallError::UnknownTool(parsed.tool.clone()))?;
+    // Same argument spellings the MCP dispatcher accepts (`file_path`, `cmd`).
+    let args_map = crate::server::canonicalize_arg_aliases(tool, &args_map).unwrap_or(args_map);
+
     // Pre-resolve a `path` string arg into resolved_paths so handlers that read
     // ctx.resolved_path("path") (e.g. ctx_tree, require_resolved_path) work.
-    // Without this, multi_path falls back to "." (CWD), not project_root.
+    // Without this, multi_path falls back to "." (CWD), not project_root. A
+    // refusal is recorded in path_errors exactly as the MCP dispatcher does,
+    // so each tool reports it (or narrows a broad walk) the same way.
     let mut resolved_paths = HashMap::new();
+    let mut path_errors = HashMap::new();
     if let Some(p) = args_map.get("path").and_then(Value::as_str) {
         match crate::core::path_resolve::resolve_tool_path(Some(&parsed.project_root), None, p) {
             Ok(abs) => {
@@ -227,19 +237,13 @@ pub(crate) fn run_call(args: &[String]) -> Result<String, CallError> {
                 resolved_paths.insert("path".to_string(), resolved);
             }
             Err(e) => {
-                return Err(CallError::Dispatch(DispatchError::PathResolution {
-                    message: e,
-                }));
+                path_errors.insert("path".to_string(), e);
             }
         }
     }
 
-    let ctx = oneshot_ctx(parsed.project_root.clone(), resolved_paths);
-
-    let registry = build_registry();
-    let tool = registry
-        .get(&parsed.tool)
-        .ok_or_else(|| CallError::UnknownTool(parsed.tool.clone()))?;
+    let mut ctx = oneshot_ctx(parsed.project_root.clone(), resolved_paths);
+    ctx.path_errors = path_errors;
 
     // Handlers are synchronous (the JetBrains backend uses blocking `ureq`),
     // so no tokio runtime is required here.

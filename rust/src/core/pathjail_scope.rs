@@ -183,6 +183,12 @@ fn project_containing(path: &Path, home: &Path) -> Option<PathBuf> {
     None
 }
 
+/// True when the canonical `path` lies in a protected home zone (`~/.ssh`,
+/// `~/Library`, any other dot folder, …).
+pub(crate) fn in_protected_zone(path: &Path) -> bool {
+    zone_home().is_some_and(|home| protected_zone_in(path, &home).is_some())
+}
+
 /// Protected zones are a deny, not only a gap in the widening: a root or allow
 /// entry that merely *contains* a zone (a project rooted at `~` for a dotfiles
 /// repo, an `extra_roots` entry of `~`, a host reporting `~` as its root) must

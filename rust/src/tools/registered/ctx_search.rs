@@ -278,7 +278,8 @@ fn handle_regex(args: &Map<String, Value>, ctx: &ToolContext) -> Result<ToolOutp
             anchored,
             exclude.as_deref(),
             exclude_pattern.as_deref(),
-        );
+        )
+        .map(|output| resolved.annotate(output));
     }
 
     let _mode_guard = crate::core::savings_footer::ModeGuard::new("search");
@@ -850,6 +851,8 @@ fn search_single(
 /// half an audit's results to exactly that.
 const QUERY_KEYS: &[&str] = &[
     "pattern",
+    "path",
+    "file_path",
     "include",
     "ext",
     "exclude",
@@ -954,12 +957,28 @@ fn handle_batch_queries(
         let exclude_pattern = get_str(obj, "exclude_pattern");
         let per_query_max = resolve_query_cap(obj, default_share, idx)
             .map_err(|e| ErrorData::invalid_params(e, None))?;
+        // A per-query `path` scopes that query only; the top-level path (or
+        // the project) stays the default for the others.
+        let query_root = match get_str(obj, "path").or_else(|| get_str(obj, "file_path")) {
+            Some(raw) => match ctx.resolve_path_sync(&raw) {
+                Ok(p) => p,
+                Err(e) => {
+                    combined.push_str(&format!(
+                        "── query {}: '{}' ──\nERROR: {e}\n\n",
+                        idx + 1,
+                        truncate_query(&pattern, 40)
+                    ));
+                    continue;
+                }
+            },
+            None => root.clone(),
+        };
 
         let search_result = tokio::task::block_in_place(|| {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 cached_or_search(
                     &pattern,
-                    root,
+                    &query_root,
                     include.as_deref(),
                     per_query_max,
                     crp,
@@ -1012,7 +1031,7 @@ fn handle_batch_queries(
     // R30: Search evidence for batch queries.
     crate::tools::search_hook::on_search("batch_query", "regex", total_observed, total_sent);
 
-    Ok(ToolOutput {
+    Ok(resolved.annotate(ToolOutput {
         text: final_out,
         original_tokens: total_observed,
         saved_tokens: saved,
@@ -1021,7 +1040,7 @@ fn handle_batch_queries(
         changed: false,
         shell_outcome: None,
         content_blocks: None,
-    })
+    }))
 }
 
 /// Truncate a query string for display (used in batch labels).

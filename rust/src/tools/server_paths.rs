@@ -93,33 +93,27 @@ impl LeanCtxServer {
                 .await?
                 .unwrap_or(p),
             Err(e) => {
-                // #899: the rejected path is dependency source in a language
-                // cache (Go module cache, cargo registry, site-packages,
-                // node_modules, …). Register its root as a session-scoped
-                // read-only root and resolve the path again, so this call is
-                // served instead of failing with "retry". The registration is
-                // what grants access, not the retry; writes into the cache
-                // stay denied either way.
-                if let Some((label, cache_root)) =
-                    crate::core::pathjail::detect_language_cache_root(&resolved)
-                    && crate::core::pathjail::register_session_read_only_root(&cache_root)
-                {
-                    let Ok(jailed) = crate::core::pathjail::jail_path_with_roots(
+                // #899: a refused path in a language cache or an agent
+                // instruction folder is admitted read-only for the session
+                // and resolved again (see `jail_path_auto_admitting`). If it
+                // is still refused, report why — "retry" would only repeat
+                // the same refusal.
+                if crate::core::pathjail::detect_language_cache_root(&resolved).is_some() {
+                    match crate::core::pathjail::jail_path_auto_admitting(
                         &resolved,
                         jail_root_path,
                         &extra_roots,
-                    ) else {
-                        return Err(format!(
-                            "Auto-detected {label} at {} — added as a read-only root for \
-                             this session. Retry the read.",
-                            cache_root.display()
-                        ));
-                    };
-                    tracing::info!(
-                        "auto-registered {label} at {} as a read-only root",
-                        cache_root.display()
-                    );
-                    jailed
+                    ) {
+                        Ok(jailed) => jailed,
+                        Err(retry) => {
+                            crate::core::security_events::record_one(
+                                "resolve_path",
+                                "unknown",
+                                crate::core::security_events::SecurityKind::PathBlocked,
+                            );
+                            return Err(retry.to_string());
+                        }
+                    }
                 } else if let Some(jailed) = self
                     .maybe_reroot_for_absolute_path(&resolved, jail_root_path, &extra_roots)
                     .await?

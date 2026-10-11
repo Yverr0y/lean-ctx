@@ -744,3 +744,69 @@ fn registered_cache_root_reads_allow_writes_deny() {
         "writes into the cache root must be denied"
     );
 }
+
+/// Agent instruction files (skills, commands, rules, global instruction
+/// files) below `~` are auto-admitted read-only; the credentials beside them,
+/// `..` tricks and same-named folders elsewhere are not.
+#[test]
+fn agent_instruction_roots_are_admitted_but_credentials_stay_jailed() {
+    let home = dirs::home_dir().expect("home dir in test env");
+    for (inside, root) in [
+        (".claude/skills/review/SKILL.md", ".claude/skills"),
+        (".codex/skills/x/SKILL.md", ".codex/skills"),
+        (".claude/CLAUDE.md", ".claude/CLAUDE.md"),
+        (".agents/skills/a/SKILL.md", ".agents/skills"),
+        (".cursor/rules/style.mdc", ".cursor/rules"),
+    ] {
+        let (_, detected) = detect_language_cache_root(&home.join(inside))
+            .unwrap_or_else(|| panic!("{inside} must be admitted"));
+        assert!(
+            detected.ends_with(root),
+            "{inside} → {}",
+            detected.display()
+        );
+    }
+    for private in [
+        ".claude/.credentials.json",
+        ".claude/settings.json",
+        ".codex/auth.json",
+        ".claude/skills/../.credentials.json",
+        ".claude/projects/p/transcript.jsonl",
+    ] {
+        assert!(
+            detect_language_cache_root(&home.join(private)).is_none(),
+            "{private} must stay jailed"
+        );
+    }
+    assert!(
+        detect_language_cache_root(Path::new("/opt/x/.claude/skills/a/SKILL.md")).is_none(),
+        "only the home directory's agent folders are admitted"
+    );
+}
+
+/// A link inside a language cache lives in a writable project, where an agent
+/// could plant it: it must never open its target, even below a temp dir.
+#[cfg(not(feature = "no-jail"))]
+#[cfg(unix)]
+#[test]
+fn symlink_in_language_cache_is_never_followed() {
+    let _iso = crate::core::data_dir::isolated_data_dir();
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_path = tmp.path().canonicalize().unwrap();
+    let root = tmp_path.join("go/pkg/mod");
+    let outside = tmp_path.join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret.txt"), "x").unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("planted")).unwrap();
+    let project = tmp_path.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let linked = root.join("planted/secret.txt");
+    register_session_read_only_root(&root);
+    assert!(!register_symlink_target_read_only(&linked, &root));
+    assert!(
+        jail_path_with_roots(&linked, &project, &[]).is_err(),
+        "the planted link's target stays jailed"
+    );
+}

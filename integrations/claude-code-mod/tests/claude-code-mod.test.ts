@@ -376,6 +376,87 @@ test("real ctx_shell shapes: JSON-text ack, structured failed status, transient 
   expect(wakes[0]).toContain("Full output: ctx_expand id=arch_7");
 });
 
+// User report: a job whose terminal status the model already read through
+// background_action="status" was still announced by the next watcher tick —
+// a duplicate wake that cost a whole extra turn. The same holds for cancel.
+for (const action of ["status", "cancel"] as const) {
+  test(`a terminal ${action} answer the model saw ends the watch without a wake`, async ($, on) => {
+    const clock = mock.clock(on);
+    const wakes: string[] = [];
+    let polls = 0;
+    const terminal = {
+      jobId: "shell_seen",
+      state: action === "cancel" ? "cancelled" : "completed",
+      exitCode: 0,
+    };
+    on("command.register", ($, event) => ({ value: { command: event.name } }));
+    on("tool.call", ($, event) => {
+      const fields = event as unknown as Record<string, unknown>;
+      if (fields.background_action) {
+        return {
+          result: {
+            content: [{ type: "text", text: JSON.stringify(terminal) }],
+            structuredContent: terminal,
+            isError: false,
+          },
+          text: JSON.stringify(terminal),
+        };
+      }
+      return toolResult('{"jobId":"shell_seen","state":"running","summary":"background job started"}');
+    });
+    on("mcp.call", () => {
+      polls += 1;
+      return { value: { content: [{ type: "text", text: "" }], structuredContent: terminal, isError: false } };
+    });
+    on("prompt.submit", ($, event) => {
+      wakes.push(event.text);
+      return { text: event.text };
+    });
+
+    const ack = await $.tool.call({ tool: SHELL, command: "true", run_in_background: true });
+    expect(ack.context).toEqual([WATCH_CONTEXT]);
+
+    const seen = await $.tool.call({ tool: SHELL, background_action: action, job_id: "shell_seen" });
+    expect(seen.context ?? []).not.toContain(WATCH_CONTEXT);
+
+    for (let tick = 0; tick < 3; tick += 1) {
+      await clock.advance(2_000);
+      await flushMicrotasks();
+    }
+    expect(polls).toBe(0);
+    expect(wakes).toEqual([]);
+  });
+}
+
+test("a running status answer keeps the watch: the finish still wakes once", async ($, on) => {
+  const clock = mock.clock(on);
+  const wakes: string[] = [];
+  on("command.register", ($, event) => ({ value: { command: event.name } }));
+  on("tool.call", () =>
+    toolResult('{"jobId":"shell_live","state":"running","summary":"still running"}'),
+  );
+  on("mcp.call", () => ({
+    value: {
+      content: [{ type: "text", text: "" }],
+      structuredContent: { jobId: "shell_live", state: "completed", exitCode: 0 },
+      isError: false,
+    },
+  }));
+  on("prompt.submit", ($, event) => {
+    wakes.push(event.text);
+    return { text: event.text };
+  });
+
+  await $.tool.call({ tool: SHELL, command: "sleep 30", run_in_background: true });
+  await $.tool.call({ tool: SHELL, background_action: "status", job_id: "shell_live" });
+  for (let tick = 0; tick < 3; tick += 1) {
+    await clock.advance(2_000);
+    await flushMicrotasks();
+  }
+  expect(wakes.length).toBe(1);
+  expect(wakes[0]).toContain("Job shell_live finished · exit 0");
+});
+
 test("sleep waits are answered only while watched and MCP errors fail open", async ($, on) => {
   const clock = mock.clock(on);
   const forwarded: string[] = [];

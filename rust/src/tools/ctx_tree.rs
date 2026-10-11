@@ -36,7 +36,10 @@ pub fn handle(
     }
     if !root.is_dir() {
         return (
-            format!("ERROR: {path} does not exist or is not a directory"),
+            format!(
+                "ERROR: {path} does not exist or is not a directory{}",
+                crate::core::path_suggest::hint(root)
+            ),
             0,
         );
     }
