@@ -37,8 +37,15 @@ impl McpTool for CtxGlobTool {
         args: &Map<String, Value>,
         ctx: &ToolContext,
     ) -> Result<ToolOutput, ErrorData> {
+        // `glob` is the name other agents' file-finding tools use.
         let pattern = get_str(args, "pattern")
-            .ok_or_else(|| ErrorData::invalid_params("pattern is required", None))?;
+            .or_else(|| get_str(args, "glob"))
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    "pattern is required. Example: ctx_glob(pattern=\"**/*.rs\")",
+                    None,
+                )
+            })?;
         let resolved = crate::server::multi_path::resolve_tool_paths(args, ctx)
             .map_err(|e| ErrorData::invalid_params(format!("ERROR: {e}"), None))?;
         let max = (get_int(args, "max_results").unwrap_or(200) as usize).min(500);
@@ -60,7 +67,8 @@ impl McpTool for CtxGlobTool {
                 respect,
                 allow_secret_paths,
                 max,
-            );
+            )
+            .map(|output| resolved.annotate(output));
         }
 
         let _mode_guard = crate::core::savings_footer::ModeGuard::new("glob");

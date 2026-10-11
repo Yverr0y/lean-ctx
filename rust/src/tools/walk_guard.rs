@@ -27,9 +27,96 @@ pub(crate) fn deny_unsafe_walk_root(dir: &str) -> Option<String> {
     ))
 }
 
+/// Canonical form for ancestry comparisons; falls back to the absolute
+/// spelling when the path does not exist (canonicalize needs a real path).
+fn comparable(path: &str) -> std::path::PathBuf {
+    let expanded = crate::core::pathjail::expand_user_path(path);
+    std::fs::canonicalize(&expanded)
+        .or_else(|_| std::path::absolute(&expanded))
+        .unwrap_or(expanded)
+}
+
+/// True when `project_root` is a usable, walkable session project.
+fn usable_project(project_root: &str) -> bool {
+    !project_root.trim().is_empty()
+        && std::path::Path::new(project_root).is_absolute()
+        && crate::core::graph_index::is_safe_scan_root_public(project_root)
+}
+
+/// Narrows a walk over a broad root (`~`, `/`, `~/Documents`, …) to the
+/// session's project when that project lies inside it. Agents ask for the
+/// broad root because they do not know the project path; refusing such a
+/// request gave them nothing to act on and they repeated it. Returns the
+/// project root plus a one-line note for the response, or `None` when
+/// `requested` is walkable as is or does not contain the project.
+pub(crate) fn narrow_to_project(requested: &str, project_root: &str) -> Option<(String, String)> {
+    let requested_abs = comparable(requested);
+    if crate::core::graph_index::is_safe_scan_root_public(&requested_abs.to_string_lossy())
+        || !usable_project(project_root)
+    {
+        return None;
+    }
+    let project = comparable(project_root);
+    if !project.starts_with(&requested_abs) {
+        return None;
+    }
+    let project = project.to_string_lossy().into_owned();
+    let note = format!(
+        "[scope: '{requested}' is too broad to walk — searched the session project {project} instead]"
+    );
+    Some((project, note))
+}
+
+/// The refusal for a broad root that cannot be narrowed, phrased so the agent
+/// can fix the call on the next attempt instead of repeating it.
+pub(crate) fn broad_root_guidance(requested: &str, project_root: &str) -> String {
+    let abs = comparable(requested).to_string_lossy().into_owned();
+    if usable_project(project_root) {
+        format!(
+            "refusing to scan '{requested}' ({abs}) — it is a broad or privacy-protected \
+             directory. The session project is {project_root}: omit `path` to search it, or \
+             pass a directory inside a project."
+        )
+    } else {
+        format!(
+            "refusing to scan '{requested}' ({abs}) — it is a broad or privacy-protected \
+             directory, and lean-ctx has not bound this session to a project (the host \
+             reported no project directory). Pass the absolute path of the project directory \
+             as `path`, e.g. path=\"/home/me/code/my-app\"; it then stays the session project."
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::deny_unsafe_walk_root;
+    use super::{broad_root_guidance, deny_unsafe_walk_root, narrow_to_project};
+
+    #[test]
+    fn broad_root_narrows_to_contained_project() {
+        let base = tempfile::tempdir().unwrap();
+        let project = base.path().join("proj");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        let project = project.canonicalize().unwrap();
+        let (root, note) = narrow_to_project("/", &project.to_string_lossy())
+            .expect("the filesystem root contains every project");
+        assert_eq!(std::path::Path::new(&root), project);
+        assert!(note.contains("too broad"), "{note}");
+    }
+
+    #[test]
+    fn walkable_root_is_not_narrowed() {
+        let project = tempfile::tempdir().unwrap();
+        let p = project.path().to_string_lossy().into_owned();
+        assert_eq!(narrow_to_project(&p, &p), None);
+    }
+
+    #[test]
+    fn broad_root_without_project_explains_how_to_bind_one() {
+        assert_eq!(narrow_to_project("/", ""), None);
+        let msg = broad_root_guidance("/", "");
+        assert!(msg.contains("not bound this session"), "{msg}");
+        assert!(msg.contains("absolute path"), "{msg}");
+    }
 
     #[test]
     fn refuses_filesystem_root() {

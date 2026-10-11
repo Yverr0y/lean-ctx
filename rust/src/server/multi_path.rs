@@ -7,6 +7,58 @@ use crate::server::tool_trait::{ToolContext, get_str, get_str_array};
 pub struct ResolvedPaths {
     pub roots: Vec<String>,
     pub is_multi: bool,
+    /// Set when a too-broad root was narrowed to the session project; the
+    /// tool puts it in front of its output so the agent sees the scope.
+    pub note: Option<String>,
+}
+
+impl ResolvedPaths {
+    fn single(root: String) -> Self {
+        Self {
+            roots: vec![root],
+            is_multi: false,
+            note: None,
+        }
+    }
+
+    /// Prefixes the scope note, if any, to a tool's output text.
+    pub fn annotate(
+        &self,
+        mut output: crate::server::tool_trait::ToolOutput,
+    ) -> crate::server::tool_trait::ToolOutput {
+        if let Some(note) = &self.note {
+            output.text = format!("{note}\n{}", output.text);
+        }
+        output
+    }
+}
+
+/// Walks over a broad root (`~`, `/`, `~/Documents`) never run: narrow them to
+/// the session project when it lies inside, otherwise refuse with guidance
+/// the agent can act on. `requested` is what the caller asked for (before
+/// jail resolution), `root` what it resolved to, if anything.
+fn guard_broad_root(
+    requested: &str,
+    root: Option<String>,
+    ctx: &ToolContext,
+) -> Option<Result<ResolvedPaths, String>> {
+    let probe = root.as_deref().unwrap_or(requested);
+    if let Some((project, note)) =
+        crate::tools::walk_guard::narrow_to_project(probe, &ctx.project_root)
+    {
+        return Some(Ok(ResolvedPaths {
+            note: Some(note),
+            ..ResolvedPaths::single(project)
+        }));
+    }
+    let root = root?;
+    if crate::tools::walk_guard::deny_unsafe_walk_root(&root).is_some() {
+        return Some(Err(crate::tools::walk_guard::broad_root_guidance(
+            requested,
+            &ctx.project_root,
+        )));
+    }
+    None
 }
 
 /// Resolve tool paths with multi-root support.
@@ -29,10 +81,7 @@ pub fn resolve_tool_paths(
     if let Some(repo) = get_str(args, "repo")
         && let Some(root) = crate::core::multi_repo::resolve_repo_root(&repo)
     {
-        return Ok(ResolvedPaths {
-            roots: vec![root],
-            is_multi: false,
-        });
+        return Ok(ResolvedPaths::single(root));
     }
 
     if let Some(paths) = get_str_array(args, "paths")
@@ -43,6 +92,7 @@ pub fn resolve_tool_paths(
             return Ok(ResolvedPaths {
                 is_multi: resolved.len() > 1,
                 roots: resolved,
+                note: None,
             });
         }
         // The caller explicitly listed paths but none resolved — surface
@@ -59,17 +109,25 @@ pub fn resolve_tool_paths(
     // Without this fallback the parameter is silently ignored and the
     // search runs on the project root.
     for key in &["path", "file_path"] {
+        let requested = get_str(args, key).unwrap_or_default();
         if let Some(p) = ctx.resolved_path(key) {
-            return Ok(ResolvedPaths {
-                roots: vec![p.to_string()],
-                is_multi: false,
-            });
+            if let Some(guarded) = guard_broad_root(&requested, Some(p.to_string()), ctx) {
+                return guarded;
+            }
+            return Ok(ResolvedPaths::single(p.to_string()));
         }
         // An explicit path the dispatcher could not resolve lands in
         // `path_errors`. Do NOT fall back to the project root — return the
         // resolution error so the agent learns the path is out of scope
-        // rather than silently receiving an unrelated tree (#401).
+        // rather than silently receiving an unrelated tree (#401). The one
+        // exception is an ancestor of the session project (`~`, `/`): the
+        // agent asked for a superset, so the project is the right answer.
         if let Some(detail) = ctx.path_error(key) {
+            if !requested.is_empty()
+                && let Some(Ok(narrowed)) = guard_broad_root(&requested, None, ctx)
+            {
+                return Ok(narrowed);
+            }
             return Err(detail.to_string());
         }
     }
@@ -123,15 +181,17 @@ pub fn resolve_tool_paths(
                 return Ok(ResolvedPaths {
                     is_multi: true,
                     roots,
+                    note: None,
                 });
             }
         }
     }
 
-    Ok(ResolvedPaths {
-        roots: vec![ctx.resolve_path_sync(&ctx.project_root)?],
-        is_multi: false,
-    })
+    let root = ctx.resolve_path_sync(&ctx.project_root)?;
+    if let Some(guarded) = guard_broad_root(&ctx.project_root, Some(root.clone()), ctx) {
+        return guarded;
+    }
+    Ok(ResolvedPaths::single(root))
 }
 
 fn resolve_paths_sync(ctx: &ToolContext, raw: &[String]) -> Vec<String> {
@@ -247,6 +307,43 @@ mod tests {
         let resolved = resolve_tool_paths(&Map::new(), &ctx).unwrap();
         assert!(resolved.is_multi);
         assert!(resolved.roots.iter().all(|root| root == &ctx.project_root));
+    }
+
+    // An agent that asks for `/` or `~` wants a superset of its project:
+    // answer with the project and say so, instead of a refusal it repeats.
+    #[test]
+    fn broad_explicit_path_narrows_to_the_session_project() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".git")).unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let mut ctx = test_ctx();
+        ctx.project_root = root.to_string_lossy().into_owned();
+        ctx.path_errors.insert(
+            "path".to_string(),
+            "path escapes project root: / (root: …)".to_string(),
+        );
+        let mut args = Map::new();
+        args.insert("path".to_string(), json!("/"));
+        let resolved = resolve_tool_paths(&args, &ctx).expect("narrowed, not refused");
+        assert_eq!(std::path::Path::new(&resolved.roots[0]), root);
+        assert!(
+            resolved
+                .note
+                .as_deref()
+                .is_some_and(|n| n.contains("too broad"))
+        );
+    }
+
+    #[test]
+    fn broad_path_without_a_project_explains_how_to_bind_one() {
+        let mut ctx = test_ctx();
+        ctx.project_root.clear();
+        ctx.resolved_paths
+            .insert("path".to_string(), "/".to_string());
+        let mut args = Map::new();
+        args.insert("path".to_string(), json!("/"));
+        let err = resolve_tool_paths(&args, &ctx).expect_err("nothing to narrow to");
+        assert!(err.contains("not bound this session"), "{err}");
     }
 
     #[test]

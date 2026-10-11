@@ -169,6 +169,8 @@ pub fn normalize_tool_path_lexical(path: &str) -> String {
         && let Some(translated) = translate_msys_drive_prefix(&p)
     {
         p = translated;
+    } else if !cfg!(windows) {
+        p = unescape_shell_path(&p);
     }
 
     p = p.replace('\\', "/");
@@ -184,6 +186,66 @@ pub fn normalize_tool_path_lexical(path: &str) -> String {
     }
 
     p
+}
+
+/// Undo shell quoting that agents copy into tool paths on Unix: one pair of
+/// surrounding quotes (`'/a b/c'`) and backslash escapes (`My\ Project`,
+/// `src/\(app\)`). Without this the separator rewrite below turned
+/// `My\ Project` into `My/ Project` — a directory that does not exist, so
+/// every path below a folder with a space failed. A backslash is never a
+/// separator on Unix and practically never part of a file name; a backslash
+/// before an ordinary character is kept for the rewrite as before.
+fn unescape_shell_path(path: &str) -> String {
+    let trimmed = path.trim();
+    let unquoted = [('\'', '\''), ('"', '"')]
+        .iter()
+        .find_map(|&(open, close)| {
+            trimmed
+                .strip_prefix(open)
+                .and_then(|rest| rest.strip_suffix(close))
+                .filter(|inner| !inner.is_empty())
+        })
+        .unwrap_or(path);
+    if !unquoted.contains('\\') {
+        return unquoted.to_string();
+    }
+    let mut out = String::with_capacity(unquoted.len());
+    let mut chars = unquoted.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\'
+            && let Some(&next) = chars.peek()
+            && matches!(
+                next,
+                ' ' | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '&'
+                    | '\''
+                    | '"'
+                    | '$'
+                    | '!'
+                    | '#'
+                    | ';'
+                    | '*'
+                    | '?'
+                    | '<'
+                    | '>'
+                    | '|'
+                    | '~'
+                    | '`'
+                    | '='
+            )
+        {
+            out.push(next);
+            chars.next();
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Normalize paths from any client format to a consistent OS-native form.
@@ -806,6 +868,30 @@ mod tests {
         assert_eq!(
             normalize_tool_path("/usr/local/bin/lean-ctx"),
             "/usr/local/bin/lean-ctx"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_unescapes_shell_quoting_on_unix() {
+        assert_eq!(
+            normalize_tool_path_lexical(r"/Users/me/Pfadi\ Scouting/app/main.ts"),
+            "/Users/me/Pfadi Scouting/app/main.ts",
+            "an escaped space must not become a separator"
+        );
+        assert_eq!(
+            normalize_tool_path_lexical(r"/srv/\(group\)/a\&b.txt"),
+            "/srv/(group)/a&b.txt"
+        );
+        assert_eq!(
+            normalize_tool_path_lexical("'/Users/me/My Project/src'"),
+            "/Users/me/My Project/src"
+        );
+        assert_eq!(normalize_tool_path_lexical("\"/tmp/a b\""), "/tmp/a b");
+        assert_eq!(
+            normalize_tool_path_lexical("'"),
+            "'",
+            "a lone quote is a name"
         );
     }
 

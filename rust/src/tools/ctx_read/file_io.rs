@@ -477,9 +477,14 @@ fn open_with_retry(path: &str) -> Result<std::fs::File, std::io::Error> {
             std::thread::sleep(std::time::Duration::from_millis(50));
             open_nofollow(path).map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    std::io::Error::other(format!(
-                        "file not found: {path} — verify the path with ctx_tree or ctx_search"
-                    ))
+                    let hint = crate::core::path_suggest::hint(std::path::Path::new(path));
+                    if hint.is_empty() {
+                        std::io::Error::other(format!(
+                            "file not found: {path} — verify the path with ctx_tree or ctx_search"
+                        ))
+                    } else {
+                        std::io::Error::other(format!("file not found: {path}{hint}"))
+                    }
                 } else {
                     e
                 }

@@ -449,6 +449,7 @@ pub(crate) mod owasp_alignment;
 pub(crate) mod path_locks;
 pub(crate) mod path_mode_memory;
 pub mod path_resolve;
+pub(crate) mod path_suggest;
 pub mod paths;
 pub mod pathutil;
 pub mod persona;

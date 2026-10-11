@@ -509,6 +509,143 @@ const LANGUAGE_CACHE_PATTERNS: &[(&str, &str, &str)] = &[
     ("/.gem/ruby/", "Ruby gems", "~/.gem/ruby"),
 ];
 
+/// Agent-owned instruction locations below `~` that the agents themselves are
+/// told to read: skills, slash commands, sub-agent definitions, rules, plans
+/// and the global instruction files. They live inside protected dot folders,
+/// so every such read failed although nothing in them is a credential (auth
+/// tokens sit next to them — `~/.codex/auth.json`, `~/.claude/.credentials.json`
+/// — and stay jailed because only these exact subtrees are opened). Opened
+/// read-only, like a language cache; writes stay denied. (Per-project auto
+/// memory is admitted separately by [`is_harness_auto_memory_path`].)
+const AGENT_INSTRUCTION_ROOTS: &[(&str, &str)] = &[
+    (".claude/skills", "Claude Code skills"),
+    (".claude/commands", "Claude Code commands"),
+    (".claude/agents", "Claude Code agents"),
+    (".claude/plans", "Claude Code plans"),
+    (".claude/rules", "Claude Code rules"),
+    (".claude/plugins/marketplaces", "Claude Code plugins"),
+    (".claude/plugins/cache", "Claude Code plugins"),
+    (".claude/CLAUDE.md", "Claude Code instructions"),
+    (".codex/skills", "Codex skills"),
+    (".codex/prompts", "Codex prompts"),
+    (".codex/AGENTS.md", "Codex instructions"),
+    (".agents/skills", "agent skills"),
+    (".cursor/rules", "Cursor rules"),
+    (".cursor/skills", "Cursor skills"),
+    (".cursor/commands", "Cursor commands"),
+    (".gemini/GEMINI.md", "Gemini instructions"),
+    (".gemini/commands", "Gemini commands"),
+    (".config/opencode/agent", "OpenCode agents"),
+    (".config/opencode/command", "OpenCode commands"),
+    (".config/opencode/AGENTS.md", "OpenCode instructions"),
+];
+
+/// If `candidate` lies in one of [`AGENT_INSTRUCTION_ROOTS`] below the home
+/// directory, return `(label, root)`. Anchored at `~` so a same-named folder
+/// elsewhere on disk is not opened.
+fn detect_agent_instruction_root(candidate: &Path) -> Option<(&'static str, PathBuf)> {
+    let home = dirs::home_dir()?;
+    let canon_home = canonicalize_secure(&home);
+    let rel = candidate
+        .strip_prefix(&home)
+        .or_else(|_| candidate.strip_prefix(&canon_home))
+        .ok()?;
+    // A `..` would let `~/.claude/skills/../.credentials.json` match by prefix.
+    if rel
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    AGENT_INSTRUCTION_ROOTS
+        .iter()
+        .find(|(root, _)| rel.starts_with(root))
+        .map(|&(root, label)| (label, canon_home.join(root)))
+}
+
+/// When `candidate` reaches its target through a symlink inside an agent
+/// instruction `root` (a skill directory linked in from a checkout or from
+/// `~/.agents/skills`), register the target's directory read-only too.
+///
+/// Only agent instruction roots qualify: lean-ctx's tools cannot write there
+/// (protected zone, read-only root), so a link inside was put there by the
+/// user. A language cache such as `node_modules` sits in a writable project,
+/// where an agent could plant a link to anything — those are never followed.
+/// Targets must stay below `~` and outside protected zones, so a link cannot
+/// smuggle `~/.ssh` or a system directory in. Returns `true` when a target
+/// directory was newly registered.
+pub fn register_symlink_target_read_only(candidate: &Path, root: &Path) -> bool {
+    if detect_agent_instruction_root(root).is_none()
+        || (!candidate.starts_with(root) && !candidate.starts_with(canonicalize_secure(root)))
+    {
+        return false;
+    }
+    let Ok(target) = std::fs::canonicalize(candidate) else {
+        return false;
+    };
+    let root = canonicalize_secure(root);
+    if target.starts_with(&root) {
+        return false;
+    }
+    // Skill managers link `~/.claude/skills/x` to `~/.agents/skills/x`: a
+    // target in another agent instruction root opens that root, not more.
+    if let Some((_, agent_root)) = detect_agent_instruction_root(&target) {
+        return register_session_read_only_root(&agent_root);
+    }
+    let dir = if target.is_dir() {
+        target
+    } else {
+        match target.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => return false,
+        }
+    };
+    let below_home =
+        dirs::home_dir().is_some_and(|home| dir.starts_with(canonicalize_secure(&home)));
+    if !below_home
+        || crate::core::pathutil::is_broad_or_unsafe_root(&dir)
+        || super::pathjail_scope::in_protected_zone(&dir)
+    {
+        return false;
+    }
+    register_session_read_only_root(&dir)
+}
+
+/// [`jail_path_with_roots`] plus the read-only auto-admission of #899: a path
+/// the jail refuses inside a language cache or an agent instruction folder
+/// registers that root read-only for the session and resolves again, so the
+/// call is served instead of failing with "retry". A symlinked skill whose
+/// target is still refused gets its target opened read-only
+/// ([`register_symlink_target_read_only`]). Writes stay denied either way.
+/// One implementation for the MCP server and the one-shot CLI.
+pub fn jail_path_auto_admitting(
+    candidate: &Path,
+    jail_root: &Path,
+    extra_roots: &[String],
+) -> Result<PathBuf, PathJailError> {
+    let first = jail_path_with_roots(candidate, jail_root, extra_roots);
+    let Err(refused) = first else {
+        return first;
+    };
+    let Some((label, root)) = detect_language_cache_root(candidate) else {
+        return Err(refused);
+    };
+    if register_session_read_only_root(&root) {
+        tracing::info!(
+            "auto-registered {label} at {} as a read-only root",
+            root.display()
+        );
+    }
+    let retry = jail_path_with_roots(candidate, jail_root, extra_roots);
+    // Only when the jail still refuses the target is it opened — never when it
+    // is already readable, which would make it read-only for a project the
+    // agent may be editing.
+    if retry.is_err() && register_symlink_target_read_only(candidate, &root) {
+        return jail_path_with_roots(candidate, jail_root, extra_roots);
+    }
+    retry
+}
+
 /// Detect well-known language cache paths and return a targeted hint. Used for
 /// jail callers that don't auto-register (e.g. batch reads); the single-path
 /// ctx_read flow instead auto-registers via [`detect_language_cache_root`].
@@ -530,6 +667,9 @@ fn detected_cache_hint(candidate: &std::path::Path) -> Option<String> {
 /// trailing slash). resolve_path uses this to auto-register a session read-only
 /// root so the retry resolves without a config edit or a subprocess (#899).
 pub fn detect_language_cache_root(candidate: &Path) -> Option<(&'static str, PathBuf)> {
+    if let Some(found) = detect_agent_instruction_root(candidate) {
+        return Some(found);
+    }
     let s = candidate.to_string_lossy().replace('\\', "/");
     for &(marker, label, _) in LANGUAGE_CACHE_PATTERNS {
         if let Some(idx) = s.find(marker) {

@@ -472,30 +472,28 @@ impl CtxReadTool {
                 crate::core::task_spine::TaskSpine::spawn_thread(move || {
                     let file_lock = per_file_lock(&path_owned);
 
+                    // The per-file lock only deduplicates concurrent reads of
+                    // one file. When an earlier read holds it past the
+                    // deadline (an abandoned read of a huge file, a slow
+                    // mount), this read proceeds without it: duplicate work
+                    // beats failing the call — the cache store below has its
+                    // own lock, and "retry in a moment" met the same holder.
                     let _file_guard = {
                         let deadline =
-                            std::time::Instant::now() + std::time::Duration::from_secs(25);
+                            std::time::Instant::now() + std::time::Duration::from_secs(10);
                         loop {
                             if cancel_flag.load(Ordering::Relaxed) {
                                 return;
                             }
                             if let Ok(guard) = file_lock.try_lock() {
-                                break guard;
+                                break Some(guard);
                             }
                             if std::time::Instant::now() >= deadline {
-                                tracing::error!(
-                                    "ctx_read: per-file lock timeout after 25s for {path_owned}"
+                                tracing::warn!(
+                                    "ctx_read: per-file lock still held after 10s for \
+                                     {path_owned}, reading without it"
                                 );
-                                let _ = tx.send((
-                                    format!("per-file lock contention for {path_owned} — retry in a moment"),
-                                    "error".to_string(),
-                                    0,
-                                    false,
-                                    None,
-                                    (0, 0),
-                                    ReuseOutcome::Cold,
-                                ));
-                                return;
+                                break None;
                             }
                             std::thread::sleep(std::time::Duration::from_millis(50));
                         }

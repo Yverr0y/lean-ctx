@@ -4,6 +4,7 @@ pub mod bypass_hint;
 pub mod compaction_sync;
 pub mod context_gate;
 mod dispatch;
+pub(crate) use dispatch::canonicalize_arg_aliases;
 pub mod dynamic_tools;
 pub mod elicitation;
 pub(crate) mod execute;

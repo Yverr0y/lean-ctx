@@ -653,30 +653,45 @@ fn delegate_replace_symbol(
 /// ops) meant "delete every match" and still reported success. Now: reject
 /// replacement keys that belong to other ops, and require `replace` to be
 /// present. An empty deletion must be opted into explicitly with `replace=""`.
+///
+/// The other ops' names are accepted as aliases — `old_string`/`old_text` for
+/// `find`, `new_string`/`new_text` for `replace` — because agents carry them
+/// over and the mapping is unambiguous. What stays closed is the #879 hole: a
+/// replacement must still be *named*, so a missing one is never read as "".
 fn resolve_find_replace(args: &Map<String, Value>) -> Result<(String, String), String> {
-    let find = get_str(args, "find")
+    let find = aliased(args, "find", &["old_string", "old_text"])?
         .filter(|s| !s.is_empty())
-        .ok_or("replace_all requires non-empty 'find'")?;
+        .ok_or("replace_all requires non-empty 'find' (old_string also accepted)")?;
+    let replace = aliased(args, "replace", &["new_string", "new_text"])?.ok_or(
+        "replace_all requires 'replace' (the replacement text, new_string also accepted); \
+         pass replace=\"\" explicitly to delete every match",
+    )?;
+    Ok((find, replace))
+}
 
-    for foreign in ["new_text", "new_string", "old_string"] {
-        if args.contains_key(foreign) {
-            return Err(format!(
-                "replace_all names its replacement 'replace', not '{foreign}' — rename it \
-                 (an unrecognized replacement key would silently delete every match)"
-            ));
+/// The string under `key` or one of its `aliases`. Two spellings that
+/// disagree are an error rather than a silent pick.
+fn aliased(
+    args: &Map<String, Value>,
+    key: &str,
+    aliases: &[&str],
+) -> Result<Option<String>, String> {
+    let mut found: Option<(&str, &str)> = None;
+    for name in std::iter::once(key).chain(aliases.iter().copied()) {
+        let Some(value) = args.get(name).and_then(Value::as_str) else {
+            continue;
+        };
+        match found {
+            Some((first, seen)) if seen != value => {
+                return Err(format!(
+                    "'{first}' and '{name}' name the same field with different values — pass only one"
+                ));
+            }
+            Some(_) => {}
+            None => found = Some((name, value)),
         }
     }
-
-    let replace = args
-        .get("replace")
-        .and_then(Value::as_str)
-        .map(String::from)
-        .ok_or(
-            "replace_all requires 'replace' (the replacement text); pass replace=\"\" \
-             explicitly to delete every match",
-        )?;
-
-    Ok((find, replace))
+    Ok(found.map(|(_, value)| value.to_string()))
 }
 
 /// #825: Bulk literal find-and-replace — no anchors needed.
@@ -765,14 +780,33 @@ mod replace_all_tests {
     }
 
     #[test]
-    fn foreign_replacement_key_is_rejected() {
-        for key in ["new_string", "new_text", "old_string"] {
-            let err = resolve_find_replace(&obj(json!({"find": "a", key: "b"}))).unwrap_err();
-            assert!(
-                err.contains(key),
-                "must name the offending key {key}: {err}"
-            );
+    fn other_ops_names_are_aliases() {
+        for (old, new) in [("old_string", "new_string"), ("old_text", "new_text")] {
+            let (f, r) = resolve_find_replace(&obj(json!({old: "a", new: "b"}))).unwrap();
+            assert_eq!((f.as_str(), r.as_str()), ("a", "b"), "{old}/{new}");
         }
+    }
+
+    #[test]
+    fn alias_never_turns_a_missing_replacement_into_a_delete() {
+        let err = resolve_find_replace(&obj(json!({"old_string": "a"}))).unwrap_err();
+        assert!(err.contains("requires 'replace'"), "got: {err}");
+    }
+
+    #[test]
+    fn conflicting_spellings_are_rejected() {
+        let err = resolve_find_replace(&obj(
+            json!({"find": "a", "old_string": "x", "replace": "b"}),
+        ))
+        .unwrap_err();
+        assert!(
+            err.contains("find") && err.contains("old_string"),
+            "got: {err}"
+        );
+        let same = resolve_find_replace(&obj(
+            json!({"find": "a", "old_string": "a", "replace": "b"}),
+        ));
+        assert!(same.is_ok(), "identical spellings agree");
     }
 
     #[test]

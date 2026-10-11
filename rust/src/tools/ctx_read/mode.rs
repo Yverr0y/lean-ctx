@@ -332,8 +332,23 @@ impl FromStr for ReadMode {
 /// instead of being silently reinterpreted — which is the failure this exists
 /// to remove.
 #[must_use]
+///
+/// A mode that is still invalid after that gets one more chance: an
+/// unambiguous misspelling of a valid mode is repaired by
+/// [`repair_mode_spelling`] (`lines:72:92`, `Full`).
 pub(crate) fn canonicalize_tail_mode(mode: &str) -> Option<String> {
     let trimmed = mode.trim();
+    canonical_bare_window(trimmed).or_else(|| {
+        trimmed
+            .parse::<ReadMode>()
+            .is_err()
+            .then(|| repair_mode_spelling(trimmed))
+            .flatten()
+    })
+}
+
+/// The `lines:` form of a bare window spelling (`-N`, `5,10-20`).
+fn canonical_bare_window(trimmed: &str) -> Option<String> {
     // GH #2000: the schema documents the bare comma multi-select (`5,10-20`)
     // next to `-N`, and it had the same failure: no `lines:` prefix, so it
     // parsed as an unknown mode and the whole file came back unmarked. Only a
@@ -347,6 +362,34 @@ pub(crate) fn canonicalize_tail_mode(mode: &str) -> Option<String> {
     let count = trimmed.strip_prefix('-')?;
     (!count.is_empty() && count.chars().all(|c| c.is_ascii_digit()))
         .then(|| format!("lines:-{count}"))
+}
+
+/// Unambiguous misspellings of a valid mode: a capitalised keyword (`Full`),
+/// a range written with another separator (`lines:72:92`, `lines:72..92`,
+/// `lines:72–92`) or a prefix joined by a space or `=` (`lines 72-92`). Only a
+/// repair that then parses is returned, so anything genuinely unclear still
+/// reaches the actionable invalid-mode error (#1209).
+fn repair_mode_spelling(mode: &str) -> Option<String> {
+    let lower = mode.to_ascii_lowercase();
+    if lower != mode && lower.parse::<ReadMode>().is_ok() {
+        return Some(lower);
+    }
+    for prefix in ["lines", "anchored"] {
+        let Some(rest) = lower.strip_prefix(prefix) else {
+            continue;
+        };
+        let rest = rest.trim_start_matches([':', '=', ' ']);
+        let mut payload = rest.trim().to_string();
+        for separator in ["..", "\u{2013}", "\u{2014}", " to ", ":"] {
+            payload = payload.replace(separator, "-");
+        }
+        payload.retain(|c| !c.is_whitespace());
+        let candidate = format!("{prefix}:{payload}");
+        if candidate != mode && candidate.parse::<ReadMode>().is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 impl fmt::Display for ReadMode {
@@ -462,6 +505,29 @@ impl ReadMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unambiguous_mode_misspellings_are_repaired() {
+        for (input, expected) in [
+            ("lines:72:92", "lines:72-92"),
+            ("lines:72..92", "lines:72-92"),
+            ("lines:72\u{2013}92", "lines:72-92"),
+            ("lines 72-92", "lines:72-92"),
+            ("lines=10-20", "lines:10-20"),
+            ("anchored:5:9", "anchored:5-9"),
+            ("Full", "full"),
+            ("MAP", "map"),
+        ] {
+            assert_eq!(
+                canonicalize_tail_mode(input).as_deref(),
+                Some(expected),
+                "{input}"
+            );
+        }
+        for untouched in ["full", "lines:5-10", "lines:-3", "nonsense", "lines:abc"] {
+            assert_eq!(canonicalize_tail_mode(untouched), None, "{untouched}");
+        }
+    }
 
     /// Every canonical mode string the handler/`render.rs` produce or accept.
     const CANONICAL: &[&str] = &[
