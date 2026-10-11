@@ -6,6 +6,10 @@ Current positioning: [LeanCTX Engine — Context Gateway for AI Systems](docs/PO
 
 ## [Unreleased]
 
+## [3.11.3] — 2026-10-11
+
+PathJail opens the home directory by default, the gateway keeps downstream MCP sessions alive between calls, Windows updates and CUDA 13 GPU embeddings work, and Claude Code gets a gateway cockpit. Agent Tools protocol and data formats are unchanged.
+
 ### Changed
 
 - **PathJail opens your whole home directory by default.** The default `path_jail_scope = home` now admits everything below `~` for reading and writing; before, it admitted only paths inside a project, read-only outside the session's project. Protected locations stay closed: every top-level dot entry (`~/.ssh`, `~/.aws`, `~/.config`, shell rc files, other agents' `~/.claude`, `~/.codex`, …), `~/Library`, `~/AppData` and `~/snap`, and everything outside `~`. The previous behaviour is the new scope `projects` (`lean-ctx config set path_jail_scope projects`), the strictest one stays `project`. A scope you set yourself is kept; `home` set explicitly now means the wider scope too. Every installation without its own setting shows a one-time notice on its next interactive command.
@@ -20,6 +24,9 @@ Current positioning: [LeanCTX Engine — Context Gateway for AI Systems](docs/PO
 - **Clearer CUDA diagnostics on Windows** (#2048, #2049). Instead of a bare `LoadLibraryExW failed`, `lean-ctx embeddings status` lists the missing DLLs and every directory it searched, says when no NVIDIA driver (`nvcuda.dll`) is installed, and states the CUDA major the provider needs instead of the CUDA version of the ONNX Runtime LeanCTX was compiled against.
 - **ONNX Runtime and CUDA libraries from more Windows Python installs are found** (#2048): every `python.exe` on `PATH`, system-wide installs under `%ProgramFiles%\Python3*` and `C:\Python3*`, the Python install manager's `%LOCALAPPDATA%\Python\pythoncore-*` (the default for Python 3.14) and the Microsoft Store Python, in addition to the per-user installs and active virtual or conda environments.
 - **`lean-ctx embeddings status` says which setting chose the embedding model** (#2049): `LEAN_CTX_EMBEDDING_MODEL` (which overrides the config), `[embedding] model` in the named `config.toml`, or the default, plus how to change it.
+- **Every second gateway call no longer fails with `Transport closed`** (#2040, reported by @smollgreymouse). `ctx_tools` (find, list, call) and gateway compression addons each built their own Tokio runtime per call and dropped it afterwards. A pooled downstream MCP session's transport lives on the runtime that opened it, so the next call got a session whose connection was already gone. All gateway I/O now runs on one runtime that lives as long as the process, so a downstream server is started once and reused across calls.
+- **The status line shows this conversation's numbers.** When several agents run LeanCTX in the same project, the Claude Code status line showed whichever session had written last, so its figures jumped between conversations or stood still. Each session now records the process of the AI client it serves, and the status line reads the session that belongs to its own client.
+- **Polling a background shell job no longer inflates the session counts.** Every `ctx_shell` status or cancel call for a background job counted as one more tool call and one more command in the session statistics; a single long build polled by an agent could add hundreds. These polls no longer count.
 
 Tool calls that failed although the agent's request was sound, found in the usage telemetry of 3.11.1 and 3.11.2:
 
@@ -37,6 +44,8 @@ Tool calls that failed although the agent's request was sound, found in the usag
 
 - **Notices from the LeanCTX team reach the installations they concern.** The acknowledgement of a telemetry send can carry up to three short notices, for example "the fix for this `ctx_read` failure is in 3.11.3". The server picks them by what the batch already reports (version, AI client, OS, runtime environment, a tool that failed), so nothing extra is sent and nobody needs to know who you are. A notice is shown once, on the terminal of the next interactive `lean-ctx` command, and never in an MCP response: text from a server does not reach the AI model. Only plain text up to 280 characters with an optional link to leanctx.com or the LeanCTX GitHub repository is accepted. With telemetry off, no notices arrive.
 - **Usage telemetry counts MCP server starts that answered no tool call.** Some clients start every configured MCP server, often in a throwaway container, and their agent never calls a tool. Such a start is now counted as an empty session (`mcp.session.empty`, next to `mcp.session`), so these starts can be told apart from real sessions.
+- **Gateway cockpit for Claude Code.** The LeanCTX plugin for Claude Code adds a sidebar that shows what passed the gateway in this conversation: which sources Claude saw and at what depth (structure, passage, full file, search, command), the two checks every delivery passed (may it be read, may it leave), the receipts, and the tokens kept out of the context. A line above the prompt pulses while LeanCTX works and shows the handoff from sources to Claude; short overlays mark a finished turn and milestones. The status line below the prompt groups the session as SELECT (files and commands), CONTROL (enforced decisions) and TOKENS (kept out, leaner, cached). It only reads LeanCTX's local session data; nothing is sent anywhere.
+- **The Claude Code plugin is set up with LeanCTX.** When Claude Code is installed, `lean-ctx setup`, `lean-ctx onboard` and every update install or refresh the plugin. If you remove it with `lean-ctx claude-mod uninstall`, it stays removed until you run `lean-ctx claude-mod install`.
 
 ## [3.11.2] — 2026-10-09
 

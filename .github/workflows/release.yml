@@ -185,7 +185,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: Thinkery-AG/leanctx-sdk
-          ref: b20dbaafdf1d736c932078f09b896c86dd06776e
+          ref: 709908384a6b778876b2a273e8779f4c8498ea57
           path: sdk-agent-tools
           persist-credentials: false
 

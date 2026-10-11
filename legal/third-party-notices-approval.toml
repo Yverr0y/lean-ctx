@@ -1,5 +1,5 @@
 schema = "leanctx.third-party-notices-approval/v1"
-approved_content_sha256 = "eda0b7024121e1f70a5db41e9f981cb3ccfd780af8098e8d1657b820915f859b"
+approved_content_sha256 = "d35f03213e32759b6fff193254b076f266b5872a478fcae342f799a153fe8ac8"
 approving_owner = "Yves Gugger"
-approval_evidence = "Copyright owner approval of the generated THIRD_PARTY_NOTICES (GENERATED AND APPROVED variant of scripts/generate-third-party-notices.py) for the 3.11.2 updater-hotfix release inputs: the engine version bump to 3.11.2 changed only the Cargo.lock, SBOM, npm package-lock and asset-manifest digests, with no change to any dependency, license or notice text; given by the owner on 2026-10-09 with the instruction to ship the hotfix immediately, and recorded on his instruction under the owner-approver policy in docs/licensing/v4-licensing.md"
-approved_at = "2026-10-09"
+approval_evidence = "Copyright owner approval of the generated THIRD_PARTY_NOTICES (GENERATED AND APPROVED variant of scripts/generate-third-party-notices.py) for the 3.11.3 release inputs: the engine version bump to 3.11.3 changed only the Cargo.lock, SBOM, npm package-lock and asset-manifest digests, with no change to any dependency, license or notice text; given by the owner on 2026-10-11 with the instruction to carry out the 3.11.3 release completely, and recorded on the owner's instruction under the owner-approver policy in docs/licensing/v4-licensing.md"
+approved_at = "2026-10-11"
