@@ -144,9 +144,13 @@ async fn relay_https_validates_certificate_and_production_configuration() {
         peers: vec![peer("recipient", endpoint.clone())],
     };
     table.validate(false).unwrap();
-    let transport = RemoteTransport::for_peer_table(table, "origin", Duration::from_secs(5), false)
-        .unwrap()
-        .with_test_tls_root(reqwest::Certificate::from_der(&ca).unwrap());
+    // The test checks certificate validation and delivery, not latency: a
+    // loaded Windows runner took longer than 5 s for the first TLS delivery
+    // while the peer was still processing it ("delivery_in_progress").
+    let transport =
+        RemoteTransport::for_peer_table(table, "origin", Duration::from_secs(30), false)
+            .unwrap()
+            .with_test_tls_root(reqwest::Certificate::from_der(&ca).unwrap());
     let mut bundle = EvidenceBundle::new("tls-task".into());
     bundle.finalize();
     let payload = serde_json::to_string(&bundle).unwrap();
