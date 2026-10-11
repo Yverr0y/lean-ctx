@@ -24,6 +24,7 @@ pub(crate) mod oauth;
 pub mod pool;
 pub mod postprocess;
 pub mod router;
+pub mod runtime;
 
 pub use catalog::Catalog;
 pub use config::{

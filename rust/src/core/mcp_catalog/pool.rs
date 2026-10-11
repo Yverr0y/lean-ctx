@@ -10,10 +10,15 @@
 //! - **idle-evicted**: a session unused for `IDLE_TTL` is dropped on the next
 //!   access (closing the child's stdin → the server exits), swept opportunistically
 //!   on every [`acquire`],
-//! - **liveness-checked**: [`acquire`] also drops any session whose transport has
-//!   closed (the child exited/crashed) *before* handing one out, so a request is
-//!   never sent into a dead pipe — and callers never have to blindly re-send a
-//!   request to recover (which could double-execute a non-idempotent tool).
+//! - **self-healing**: [`acquire`] drops a session that was cancelled before
+//!   handing one out. A child that died *between* calls is not visible through
+//!   rmcp's `RunningService` (its `is_closed` only reports cancellation), so the
+//!   first call on it fails, [`super::client`] evicts it, and the next call
+//!   reopens a fresh child. A failed request is never re-sent blindly, which
+//!   could double-execute a non-idempotent tool,
+//! - **driven by one runtime**: every gateway caller runs on the process-lifetime
+//!   [`super::runtime`], so a pooled session's transport tasks outlive the call
+//!   that opened it (#2040).
 //!
 //! The map lock is a `std::sync::Mutex` held only for short, await-free critical
 //! sections (the slow `open()` runs outside the lock), which keeps [`clear`]

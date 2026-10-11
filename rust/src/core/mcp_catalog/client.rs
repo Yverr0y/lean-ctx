@@ -168,8 +168,8 @@ pub fn result_to_text(result: &CallToolResult) -> String {
 }
 
 /// Proxy a single tool call to a downstream server over a pooled session
-/// (`tools/call`). [`super::pool::acquire`] only returns a live session, so the
-/// request is never sent into a dead pipe. A failed call is **never** retried:
+/// (`tools/call`). [`super::pool::acquire`] never returns a cancelled session.
+/// A failed call is **never** retried:
 /// a downstream tool may be non-idempotent, so re-issuing could double-execute a
 /// side effect. On any failure we evict the (now-suspect) session — the next
 /// call reopens cleanly — and surface the error for the caller to decide.
@@ -189,9 +189,8 @@ pub async fn proxy_call(
 }
 
 /// List a downstream server's tools over a pooled session (`tools/list`).
-/// [`super::pool::acquire`] guarantees a live session, so the only failure left
-/// is a rare mid-flight transport death; because listing is idempotent we evict
-/// the suspect session and reopen once. A timeout is surfaced (not retried).
+/// A session whose child died between calls fails here; because listing is
+/// idempotent we evict the suspect session and reopen once. A timeout is surfaced (not retried).
 pub async fn fetch_tools(
     transport: &ResolvedTransport,
     timeout: Duration,

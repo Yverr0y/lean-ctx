@@ -9,8 +9,8 @@
 //! (`ctx_expand`). The addon compresses; lean-ctx owns retrieval.
 //!
 //! Calling a network MCP server from the sync `Compressor::compress` trait is
-//! done on a dedicated thread+runtime (`run_blocking`), so it is safe from any
-//! caller context and never blocks an ambient runtime. Any failure degrades to
+//! done on the gateway's process-lifetime runtime (`mcp_catalog::runtime`), safe from any
+//! caller context, so pooled sessions outlive the call. Any failure degrades to
 //! returning the input unchanged.
 
 use std::sync::{Arc, Once};
@@ -78,7 +78,9 @@ fn try_compress(server: &str, input: &str) -> Option<String> {
     let input = input.to_string();
     let _server = server.to_string();
 
-    run_blocking(async move {
+    // On the gateway runtime, like every pooled-session call: a per-call runtime
+    // stopped the pooled session's tasks, so every second compression failed (#2040).
+    super::super::runtime::block_on(async move {
         let tools = client::fetch_tools(&transport, timeout).await.ok()?;
         // Prefer an explicit compression tool; fall back to the server's first
         // tool so any single-tool compression server works out of the box.
@@ -94,6 +96,8 @@ fn try_compress(server: &str, input: &str) -> Option<String> {
             .ok()?;
         Some(client::result_to_text(&result))
     })
+    .ok()
+    .flatten()
 }
 
 /// The input-text parameter of a compression tool: a known text-ish name if
@@ -112,26 +116,6 @@ fn first_string_param(tool: &rmcp::model::Tool) -> Option<String> {
         }
     }
     props.keys().next().cloned()
-}
-
-/// Run a future to completion on a dedicated thread + current-thread runtime, so
-/// the sync `compress` works whether or not the caller is inside a runtime.
-fn run_blocking<T, F>(fut: F) -> T
-where
-    T: Send + 'static,
-    F: std::future::Future<Output = T> + Send + 'static,
-{
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("compressor runtime")
-                .block_on(fut)
-        })
-        .join()
-        .expect("compressor thread")
-    })
 }
 
 #[cfg(test)]

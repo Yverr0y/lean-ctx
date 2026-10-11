@@ -2,10 +2,10 @@
 //!
 //! Keeps the registered wrapper thin: this module owns config gating, action
 //! routing, and driving the async [`mcp_catalog`] from the synchronous tool
-//! handler. The MCP dispatch layer wraps handlers in `block_in_place`, so an ambient
-//! runtime handle is available there. The CLI `call` path has no ambient
-//! runtime, so `run` falls back to building its own current_thread runtime
-//! (see `Rt`) instead of panicking on `Handle::current()`.
+//! handler. Every action runs on the gateway's process-lifetime runtime
+//! ([`mcp_catalog::runtime`]), from the MCP dispatch path and the CLI `call`
+//! path alike, so the downstream sessions the pool keeps stay alive between
+//! calls (#2040).
 
 use serde_json::{Map, Value};
 
@@ -21,27 +21,7 @@ const DISABLED_HINT: &str = "gateway is disabled. Enable it in ~/.lean-ctx/confi
      command = \"mcp-server-filesystem\"\n\
      args = [\"/path/to/dir\"]";
 
-/// Runtime adapter so the `rt.block_on(...)` call sites stay identical whether
-/// Dedicated single-threaded runtime for gateway async calls.
-///
-/// Tool handlers run inside `spawn_blocking` (#1018) where `Handle::block_on`
-/// panics. Always create a fresh current_thread runtime — it is independent of
-/// the server's multi-thread runtime and safe from any calling context.
-struct Rt(tokio::runtime::Runtime);
-
-impl Rt {
-    fn new() -> Result<Self, String> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map(Self)
-            .map_err(|e| format!("failed to start runtime for gateway: {e}"))
-    }
-
-    fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
-        self.0.block_on(fut)
-    }
-}
+use mcp_catalog::runtime::block_on;
 
 /// Execute a `ctx_tools` action, returning response text or an error message.
 ///
@@ -66,7 +46,6 @@ pub fn run(args: &Map<String, Value>, project_root: &str) -> Result<String, Stri
     mcp_catalog::adapters::compression::ensure_registered(&cfg.gateway);
 
     let action = args.get("action").and_then(Value::as_str).unwrap_or("find");
-    let rt = Rt::new()?;
 
     match action {
         "find" => {
@@ -75,13 +54,13 @@ pub fn run(args: &Map<String, Value>, project_root: &str) -> Result<String, Stri
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            let outcome = rt.block_on(mcp_catalog::find(&cfg.gateway, &query));
+            let outcome = block_on(mcp_catalog::find(&cfg.gateway, &query))?;
             Ok(mcp_catalog::render_cards(&outcome))
         }
-        "list" => Ok(rt.block_on(mcp_catalog::servers_overview(&cfg.gateway))),
+        "list" => block_on(mcp_catalog::servers_overview(&cfg.gateway)),
         "refresh" => {
             mcp_catalog::catalog::invalidate();
-            let outcome = rt.block_on(mcp_catalog::find(&cfg.gateway, ""));
+            let outcome = block_on(mcp_catalog::find(&cfg.gateway, ""))?;
             Ok(format!(
                 "gateway catalog refreshed.\n\n{}",
                 mcp_catalog::render_cards(&outcome)
@@ -96,12 +75,12 @@ pub fn run(args: &Map<String, Value>, project_root: &str) -> Result<String, Stri
                 None | Some(Value::Null) => Map::new(),
                 Some(_) => return Err("'arguments' must be a JSON object".to_string()),
             };
-            rt.block_on(mcp_catalog::proxy(
+            block_on(mcp_catalog::proxy(
                 &cfg.gateway,
                 tool,
                 arguments,
                 project_root,
-            ))
+            ))?
         }
         other => Err(format!(
             "invalid action '{other}' (use: find, call, list, refresh)"
@@ -139,8 +118,8 @@ mod tests {
 
     /// CLI-Pfad-Regression (#ctx_tools): `run` wird OHNE ambienten Tokio-Runtime
     /// aufgerufen (wie `lean-ctx call ctx_tools …`). Früher paniced
-    /// `Handle::current()` hier ("no reactor running"); jetzt baut `run` selbst
-    /// einen current_thread-Runtime. Erwartung: Ok | Err, aber NIEMALS Panik.
+    /// `Handle::current()` hier ("no reactor running"); jetzt läuft `run` auf der
+    /// prozessweiten Gateway-Runtime. Erwartung: Ok | Err, aber NIEMALS Panik.
     #[test]
     fn run_without_ambient_runtime_does_not_panic() {
         let _env_lock = crate::core::data_dir::test_env_lock();

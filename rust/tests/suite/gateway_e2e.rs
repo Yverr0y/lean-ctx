@@ -25,7 +25,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::json;
 use serial_test::serial;
 
-use lean_ctx::core::mcp_catalog::{ResolvedTransport, client, pool};
+use lean_ctx::core::mcp_catalog::{ResolvedTransport, client, pool, runtime};
 
 /// Minimal downstream MCP server exposing two tools: `echo` and `add`.
 struct EchoServer;
@@ -300,6 +300,56 @@ async fn gateway_pool_evicts_a_dead_session_and_reopens_on_next_call() {
         .expect("next call reopens a fresh session");
     assert_eq!(client::result_to_text(&ok).trim(), "echo:back");
     assert_eq!(pool::len(), 1, "exactly one fresh session after reopen");
+
+    pool::clear();
+}
+
+/// #2040: `ctx_tools` and the compression adapters are synchronous; each call
+/// used to drive its future on a fresh runtime and drop it, which stopped the
+/// pooled session's transport tasks. The pool still saw the session as open,
+/// handed it out again, and the second call failed with `Transport closed`.
+/// Two separate sync gateway calls must now share one live pooled session —
+/// the same one, not a respawned child: a liveness check alone would hide the
+/// bug by reopening the session (and spawning the server) on every call.
+#[test]
+#[serial(gateway_stdio_pool)]
+fn a_pooled_session_survives_between_separate_sync_gateway_calls() {
+    if !node_available() {
+        eprintln!("skipping gateway stdio runtime E2E: `node` is not available on PATH");
+        return;
+    }
+
+    pool::clear();
+    let transport = fixture_transport();
+    let timeout = if cfg!(windows) {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(15)
+    };
+    let echo = |text: &str| {
+        let mut args = serde_json::Map::new();
+        args.insert("text".into(), json!(text));
+        runtime::block_on(client::proxy_call(&transport, "echo", args, timeout))
+            .expect("the gateway runtime is available")
+    };
+
+    let pooled = || {
+        runtime::block_on(pool::acquire(&transport, timeout))
+            .expect("the gateway runtime is available")
+            .expect("a pooled session")
+    };
+
+    let first = echo("one").expect("first call opens and pools a session");
+    assert_eq!(client::result_to_text(&first).trim(), "echo:one");
+    let session_after_first = pooled();
+    let second = echo("two").expect("second call reuses the pooled session");
+    assert_eq!(client::result_to_text(&second).trim(), "echo:two");
+    let session_after_second = pooled();
+    assert!(
+        Arc::ptr_eq(&session_after_first, &session_after_second),
+        "both calls must run on the same pooled session, not a respawned child"
+    );
+    assert_eq!(pool::len(), 1, "both calls shared one pooled session");
 
     pool::clear();
 }
