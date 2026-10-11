@@ -6,6 +6,27 @@ Current positioning: [LeanCTX Engine — Context Gateway for AI Systems](docs/PO
 
 ## [Unreleased]
 
+## [3.11.4] — 2026-10-11
+
+A bugfix release: tool calls that an agent gets almost right are now served instead of refused, edits survive indentation slips, and the Claude Code plugin wakes the agent only once per finished background job. Agent Tools protocol and data formats are unchanged.
+
+### Fixed
+
+- **Searching a broad directory searches the project instead of failing.** `ctx_search`, `ctx_glob` and `ctx_tree` called on `~`, `/` or another directory that contains the session's project now walk the project and say so in the first line of the result. Before, they answered "refusing to scan" and agents repeated the same call. Without a bound project the refusal now names the fix: pass the project directory as `path`.
+- **Agents can read their own instruction files.** Skills, commands, sub-agent definitions, rules and plans under `~/.claude`, `~/.codex/skills` and `~/.codex/prompts`, `~/.agents/skills`, `~/.cursor`, `~/.gemini/commands` and OpenCode's `~/.config/opencode`, plus the global `CLAUDE.md`, `AGENTS.md` and `GEMINI.md`, open read-only on first use. Credentials and settings beside them, such as `~/.codex/auth.json` or `~/.claude/.credentials.json`, stay closed, and LeanCTX tools cannot write there. A skill linked in from elsewhere below `~` is followed read-only; a link into a protected location or outside `~` is not, and links inside dependency folders such as `node_modules` are never followed.
+- **A missing file comes with the file that was meant.** `ctx_read`, `ctx_search`, `ctx_glob` and `ctx_tree` name the existing path when the requested one has a typo, another extension, or was written relative to the wrong directory (`src/x.rs` for `rust/src/x.rs`).
+- **Paths with spaces work when written shell-style.** On macOS and Linux a path such as `My\ Project/notes.md` or `'/Users/me/My Project'` turned into `My/ Project` and was reported as missing. Backslash escapes and surrounding quotes are now removed.
+- **Common argument spellings are accepted.** `file_path`, `filePath`, `file` and `filename` work as `path`, `cmd` as `command` (for MCP calls and `lean-ctx call`), a `path` inside a `ctx_search` `queries[]` entry scopes that one query, `ctx_glob` accepts `glob` for `pattern`, and `ctx_patch` `replace_all` accepts `old_string`/`new_string`. A replacement must still be named explicitly, so a missing one is never taken as "delete every match"; two spellings with different values are rejected.
+- **An edit whose indentation is off still applies.** When `old_string` matches exactly one place in the file at a uniformly different indentation, `ctx_edit` and `ctx_patch` (`replace_unique`) apply it there and shift `new_string` by the same amount, and say so. Uneven or ambiguous matches still fail with the exact-match error.
+- **Read modes and glob patterns with small typos work.** `lines:72:92`, `lines:72..92`, `lines 72-92` and a capitalised `Full` are read as the mode they spell; `**.rs` and `src**` are read as `**/*.rs` and `src*/**`.
+- **`ctx_read` no longer fails with "per-file lock contention".** When an earlier read of the same file holds its lock for more than 10 seconds, the read proceeds without it.
+- **No more "Retry the read" after LeanCTX opened a dependency folder.** When a path in a dependency cache or an agent folder is still refused after it was opened read-only, the error now gives the actual reason. `lean-ctx call` resolves these paths the same way as the MCP server.
+- **The Claude Code plugin wakes the agent once per finished job.** When the agent itself had already read a finished background job with `ctx_shell` (`background_action="status"` or `"cancel"`), the plugin announced the same result again on the next turn, costing a whole extra turn.
+
+### Changed
+
+- **The token-saving curve in the Claude Code cockpit is drawn true to time and to scale.** The x axis now runs from the session's first lean-ctx call to now, the y axis starts at zero, the raw total sits behind "kept out" as a dim envelope, moments in which tokens were kept out are lit, and an axis line shows the session span and the gain of the last ten minutes. Before, one column per sample scaled from the window's lowest value made a single saving look like a cliff.
+
 ## [3.11.3] — 2026-10-11
 
 PathJail opens the home directory by default, the gateway keeps downstream MCP sessions alive between calls, Windows updates and CUDA 13 GPU embeddings work, and Claude Code gets a gateway cockpit. Agent Tools protocol and data formats are unchanged.
