@@ -567,7 +567,12 @@ fn local_read(path: &str, mode: &str, force_fresh: bool, requested_auto: bool) -
                 }),
             )
         }
-        "cognitive" | "mdl" => {
+        // Views rendered only by the shared MCP renderer. They used to fall into
+        // the `full` arm below, so `read -m density:0.4` / `-m reference` /
+        // `-m task` printed the whole file while MCP returned the view.
+        m if matches!(m, "cognitive" | "mdl" | "reference" | "task")
+            || m.starts_with("density:") =>
+        {
             let (output, _) = crate::tools::ctx_read::process_mode(
                 &content,
                 mode,

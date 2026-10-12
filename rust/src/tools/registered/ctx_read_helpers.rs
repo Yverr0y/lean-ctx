@@ -103,6 +103,11 @@ pub(super) fn extract_file_summary(output: &str, path: &str) -> String {
 /// telemetry label, not a statement about any file's contents, and letting them
 /// drive the information-bottleneck filter or the intent-target override
 /// silently answered a question the caller never asked (#1590).
+///
+/// The same holds for `intent = "git"`: a summary of the working tree's dirty
+/// files describes *state*, often left over from unrelated work, not what the
+/// caller is asking about — filtering reads by "files changed, insertions"
+/// dropped the very lines the caller wanted.
 pub(crate) fn task_intent_steers_read(intent: Option<&str>) -> bool {
-    intent != Some("inferred")
+    !crate::core::session::is_auto_task_intent(intent)
 }

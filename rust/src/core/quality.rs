@@ -120,10 +120,21 @@ pub fn guard_density(
     // Structure-only composite: ignore line_score for density mode.
     let structure_composite = ast_score * 0.6 + identifier_score * 0.4;
 
-    // Fixed threshold: only reject when real structure is damaged, not when
-    // we kept fewer lines (which is the *point* of density mode).
+    // Structure must survive intact: definitions, exports and imports. Losing
+    // fewer lines is the *point* of density mode, never a reason to reject.
     let structure_threshold = 0.85;
-    let passed = structure_composite >= structure_threshold && density >= MIN_DENSITY;
+    // Identifiers are judged against the requested budget: a view holding 30%
+    // of the tokens cannot hold 62% of the identifiers (what a fixed composite
+    // bar demanded, so only targets ≥ 0.8 ever passed), but it must hold at
+    // least as large a share of them as of the tokens — no dilution.
+    let identifier_floor = target.clamp(0.05, structure_threshold);
+    // Information density likewise against the file itself: source code sits
+    // at ρ≈0.07–0.14 *uncompressed*, so the absolute floor rejected every
+    // density view of real code, including ones denser than the original.
+    let density_floor = MIN_DENSITY.min(information_density(original, original, ext));
+    let passed = ast_score >= structure_threshold
+        && identifier_score >= identifier_floor
+        && density >= density_floor;
 
     let q = QualityScore {
         ast_score,

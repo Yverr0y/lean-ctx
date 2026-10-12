@@ -49,14 +49,20 @@ proptest! {
     fn entropy_compress_output_is_subset_of_lines(
         content in "[a-zA-Z0-9(){};= \n]{10,800}"
     ) {
+        // Every line is an original line or an explicit omission marker —
+        // lossy views never invent content and never drop it silently.
         let result = entropy_compress_deterministic(&content);
         for line in result.output.lines() {
             if line.trim().is_empty() {
                 continue;
             }
+            let marker = line
+                .trim()
+                .strip_prefix("[lean-ctx: omitted ")
+                .is_some_and(|rest| rest.ends_with(" line]") || rest.ends_with(" lines]"));
             prop_assert!(
-                content.contains(line.trim()),
-                "entropy output line not found in original: {:?}",
+                marker || content.contains(line.trim()),
+                "entropy output line neither original nor an omission marker: {:?}",
                 line
             );
         }

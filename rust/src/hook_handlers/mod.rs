@@ -49,6 +49,13 @@ pub(crate) use codex::{CODEX_SHELL_RECOVERY_HINT, session_start_additional_conte
 pub use deny::handle_deny;
 pub use observe::*;
 pub use read_dedup::handle_read_dedup;
+
+/// Every tool name the `read-dedup` handler deduplicates; installers must
+/// route each of them to it (asserted by the installer tests).
+#[cfg(test)]
+pub(crate) fn read_dedup_tools() -> impl Iterator<Item = &'static str> {
+    std::iter::once("Read").chain(read_dedup::CTX_READ_TOOLS)
+}
 pub use search_rewrite::{shell_quote, shell_tokenize};
 #[cfg(test)]
 mod tests;

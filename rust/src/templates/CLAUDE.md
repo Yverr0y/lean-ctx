@@ -18,7 +18,7 @@ PREFER lean-ctx MCP tools over native equivalents for token savings:
 - `signatures` — API surface only
 - `diff` — changed lines only (after edits)
 - `task` — task-relevant filtering
-- `reference` — quote-friendly minimal excerpts
+- `reference` — one-line pointer (path, lines, tokens) with no content; quote with `lines:N-M`
 - `aggressive` — syntax stripped
 - `entropy` — Shannon + Jaccard filtering
 - `lines:N-M` — specific range

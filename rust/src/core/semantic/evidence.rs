@@ -16,7 +16,8 @@ pub enum EvidenceGrade {
     /// Plausible by name only (e.g. a name unique in the project but not in
     /// the caller's scope — could still be an external function).
     HeuristicStructural,
-    /// Bound by the caller's own scope (same file / unique import).
+    /// Bound by the caller's own scope (same file / unique import) or by the
+    /// call's own module path (`config_io::write` → `config_io.rs`).
     ResolvedStructural,
     /// A local semantic backend (language server / IDE) resolved it.
     VerifiedSemantic,
@@ -25,7 +26,9 @@ pub enum EvidenceGrade {
 impl EvidenceGrade {
     pub fn from_scope(via: ScopeMatch) -> Self {
         match via {
-            ScopeMatch::SameFile | ScopeMatch::UniqueImport => Self::ResolvedStructural,
+            ScopeMatch::SameFile | ScopeMatch::UniqueImport | ScopeMatch::ModulePath => {
+                Self::ResolvedStructural
+            }
             ScopeMatch::UniqueInProject => Self::HeuristicStructural,
         }
     }

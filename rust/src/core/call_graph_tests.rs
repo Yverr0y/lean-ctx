@@ -230,32 +230,159 @@ fn build_attributes_call_to_its_own_line_and_locates_callee() {
     assert!(edge.is_method);
 }
 
-/// A path call (`db::save`) is never bound structurally, but must reach
-/// semantic escalation when its last segment is a project symbol.
+/// A path call binds structurally only when its own path names the defining
+/// file (`db::save` → `db.rs`, `store::save` → `store/mod.rs`,
+/// `Repo::save` → the file defining `Repo`). A path that names no definition
+/// file stays a semantic candidate — never a guess by bare name.
 #[test]
-fn path_callees_are_semantic_candidates_never_structural_guesses() {
+fn path_callees_bind_by_module_path_and_never_guess() {
     let inputs = CallGraphInputs {
-        symbols: vec![sym("save", "db.rs")],
+        symbols: vec![
+            sym("save", "src/db.rs"),
+            sym("save", "src/store/mod.rs"),
+            sym("save", "src/repo.rs"),
+            sym("Repo", "src/repo.rs"),
+            sym("load", "src/db.rs"),
+        ],
         ..Default::default()
     };
     let call = |callee: &str| CallEdge {
-        caller_file: "main.rs".into(),
+        caller_file: "src/main.rs".into(),
         callee_name: callee.into(),
         ..Default::default()
     };
     let targets = resolve_edge_callee_targets(
         &inputs,
-        &[call("crate::db::save"), call("std::fs::read"), call("save")],
+        &[
+            call("crate::db::save"),
+            call("store::save"),
+            call("Repo::save"),
+            call("cache::save"),
+            call("std::fs::read"),
+            call("super::db::load"),
+            CallEdge {
+                caller_file: "src/repo.rs".into(),
+                callee_name: "Self::save".into(),
+                ..Default::default()
+            },
+        ],
     );
-    assert_eq!(targets[0], StructuralTarget::Ambiguous);
-    assert_eq!(targets[1], StructuralTarget::Unknown);
+    let module = |file: &str| StructuralTarget::Resolved {
+        file: file.into(),
+        via: ScopeMatch::ModulePath,
+    };
+    assert_eq!(targets[0], module("src/db.rs"));
+    assert_eq!(targets[1], module("src/store/mod.rs"));
+    assert_eq!(targets[2], module("src/repo.rs"));
     assert_eq!(
-        targets[2],
-        StructuralTarget::Resolved {
-            file: "db.rs".into(),
-            via: ScopeMatch::UniqueInProject
-        }
+        targets[3],
+        StructuralTarget::Ambiguous,
+        "`cache` names no defining file: semantic candidate, not a guess"
     );
+    assert_eq!(targets[4], StructuralTarget::Unknown);
+    assert_eq!(targets[5], module("src/db.rs"));
+    assert_eq!(
+        targets[6],
+        StructuralTarget::Resolved {
+            file: "src/repo.rs".into(),
+            via: ScopeMatch::SameFile
+        },
+        "`Self::save` in repo.rs is repo.rs's own save"
+    );
+}
+
+/// Regression: `callers_of("write")` missed every `crate::config_io::write(..)`
+/// call site because edges keep the callee path as written.
+#[test]
+fn callers_of_matches_path_spellings_by_segment_suffix() {
+    let mut graph = CallGraph::new("/p");
+    let edge = |caller: &str, callee: &str| CallEdge {
+        caller_file: "src/a.rs".into(),
+        caller_symbol: caller.into(),
+        caller_line: 1,
+        callee_name: callee.into(),
+        ..Default::default()
+    };
+    graph.edges = vec![
+        edge("bare", "write"),
+        edge("crate_path", "crate::config_io::write"),
+        edge("module_path", "config_io::write"),
+        edge("other_module", "net::write"),
+        edge("method", "write_all"),
+    ];
+    let callers = |q: &str| -> Vec<&str> {
+        let mut v: Vec<&str> = graph
+            .callers_of(q)
+            .iter()
+            .map(|e| e.caller_symbol.as_str())
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(
+        callers("write"),
+        ["bare", "crate_path", "module_path", "other_module"]
+    );
+    assert_eq!(
+        callers("config_io::write"),
+        ["bare", "crate_path", "module_path"],
+        "a qualified query never matches another module's `write`"
+    );
+    assert_eq!(
+        callers("crate::config_io::write"),
+        callers("config_io::write")
+    );
+    assert_eq!(
+        callers("io::write"),
+        ["bare"],
+        "segments match whole: `io` is not `config_io`"
+    );
+}
+
+#[test]
+fn callee_matches_requires_a_whole_segment_suffix() {
+    assert!(callee_matches("Self::build", "build"));
+    assert!(callee_matches("graph.build", "build"));
+    assert!(!callee_matches("rebuild", "build"));
+    assert!(!callee_matches("a::save", "b::save"));
+    assert!(
+        !callee_matches("crate", "crate"),
+        "anchors alone name nothing"
+    );
+}
+
+/// BFS and trace walk through path calls: `a` calls `crate::m::b`, `b` calls
+/// `c` — the chain must be found in both directions.
+#[test]
+fn bfs_and_trace_follow_path_callees() {
+    let mut graph = CallGraph::new("/p");
+    let edge = |caller: &str, callee: &str| CallEdge {
+        caller_file: "src/x.rs".into(),
+        caller_symbol: caller.into(),
+        caller_line: 1,
+        callee_name: callee.into(),
+        ..Default::default()
+    };
+    graph.edges = vec![edge("a", "crate::m::b"), edge("b", "c")];
+
+    let callers: Vec<String> = graph
+        .bfs_callers("c", 3)
+        .into_iter()
+        .map(|n| n.symbol)
+        .collect();
+    assert_eq!(callers, ["b", "a"]);
+
+    let callees: Vec<String> = graph
+        .bfs_callees("a", 3)
+        .into_iter()
+        .map(|n| n.symbol)
+        .collect();
+    assert_eq!(callees, ["crate::m::b", "c"]);
+
+    let path = graph.find_call_path("a", "c").expect("a → b → c");
+    let hops: Vec<&str> = path.iter().map(|h| h.symbol.as_str()).collect();
+    assert_eq!(hops, ["a", "b", "c"]);
+    assert_eq!(graph.transitive_caller_count("m::b", 3), 1);
 }
 
 #[test]

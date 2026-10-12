@@ -155,9 +155,14 @@ fn aggressiveness_is_deterministic_and_monotonic() {
 
 /// #1911: `entropy` on real source used to save 0% (the absolute H/surprise
 /// cut kept every line of a typical Rust file) and `aggressiveness` did not
-/// move it. The file-relative surprise floor must shed real tokens at the
-/// default and strictly more as aggressiveness rises — without ever falling
-/// back to the "no compression applied" path.
+/// move it. The file-relative surprise floor must shed real tokens as
+/// aggressiveness rises, strictly more at each step.
+///
+/// Every shed run is marked `[lean-ctx: omitted N lines]`: the #1910 savings
+/// on dense code came largely from *silently* deleting short structural lines
+/// (`Vcs,`, `}`, a table row), which is cheaper than any honest marker. A
+/// setting that cannot honestly beat the raw file therefore takes the labelled
+/// "no compression applied" path instead of inventing savings.
 #[test]
 fn entropy_saves_on_real_source_and_scales_with_aggressiveness() {
     let _lock = crate::core::data_dir::test_env_lock();
@@ -189,21 +194,34 @@ fn entropy_saves_on_real_source_and_scales_with_aggressiveness() {
     // monotonicity is checked on explicit levels only.
     let low = count_tokens(&render_at(Some(0.1)));
     let mid = count_tokens(&render_at(Some(0.5)));
-    let high = count_tokens(&render_at(Some(0.9)));
+    let high_out = render_at(Some(0.9));
+    let high = count_tokens(&high_out);
     let default_tokens = count_tokens(&default);
     let again = render_at(None);
     crate::test_env::remove_var("LEAN_CTX_SHOW_SAVINGS");
 
     assert_eq!(default, again, "entropy output must be deterministic");
+    let honest = |out: &str, tokens: usize| {
+        tokens < raw || out.starts_with("[lean-ctx] no compression applied")
+    };
     assert!(
-        !default.starts_with("[lean-ctx] no compression applied"),
-        "entropy fell back on compressor.rs"
+        honest(&default, default_tokens),
+        "default inflated without saying so: {default_tokens} > {raw}"
     );
     assert!(
-        default_tokens * 100 <= raw * 95,
-        "entropy default saves <5%: {default_tokens} of {raw} tok"
+        !high_out.starts_with("[lean-ctx] no compression applied"),
+        "aggressive entropy fell back on compressor.rs"
     );
-    assert!(low <= raw, "a=0.1 inflates: {low} > {raw}");
+    // Measured 2026-10-12: a=0.9 keeps 4104 of 4554 tok (~10%) with every
+    // omission marked; the floor leaves headroom for tokenizer/fixture drift.
+    assert!(
+        high * 100 <= raw * 95,
+        "aggressive entropy saves <5%: {high} of {raw} tok"
+    );
+    assert!(
+        high_out.contains("[lean-ctx: omitted "),
+        "shed lines must be marked, never silently dropped"
+    );
     assert!(
         high < mid && mid <= low,
         "not monotonic: a0.1={low} a0.5={mid} a0.9={high}"

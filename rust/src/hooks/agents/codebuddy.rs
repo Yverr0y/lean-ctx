@@ -377,9 +377,9 @@ pub(crate) fn install_codebuddy_hook_scripts(home: &std::path::Path) {
 
 const REDIRECT_MATCHER: &str = "Read|read|ReadFile|read_file|View|view|Grep|grep|Search|search|ListFiles|list_files|ListDirectory|list_directory|Glob|glob";
 
-/// PostToolUse matcher for the guard-safe re-read dedup (GL #1140), mirroring
-/// the Claude installer: Read only — the handler mirrors the Read result shape.
-const READ_DEDUP_MATCHER: &str = "Read";
+/// PostToolUse matcher for the guard-safe re-read dedup (GL #1140): the same
+/// set as the Claude installer (native Read and lean-ctx `ctx_read`).
+const READ_DEDUP_MATCHER: &str = super::claude::READ_DEDUP_MATCHER;
 
 /// Ensure the PostToolUse `hook read-dedup` entry exists exactly once (GL #1140).
 /// CodeBuddy shares Claude Code's hook contract and read-before-write guard.

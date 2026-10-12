@@ -86,7 +86,10 @@ fn migrate_if_needed(project_root: &str, new_dir: &Path) {
 /// - `7`: `calls` edges bind only within the caller's language family (a Rust
 ///   call no longer lands on a same-named shell function); graphs holding
 ///   such cross-language edges must rebuild.
-pub const GRAPH_ENGINE_VERSION: u32 = 7;
+/// - `8`: path calls (`crate::config_io::write(..)`) bind to the file their
+///   own module path names; graphs built without those `calls` edges must
+///   rebuild.
+pub const GRAPH_ENGINE_VERSION: u32 = 8;
 
 /// `true` when the persisted graph was built by an engine older than
 /// [`GRAPH_ENGINE_VERSION`] — or predates the version stamp entirely (missing or

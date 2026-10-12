@@ -43,7 +43,10 @@ pub(super) fn fresh_index(
     // lean-ctx: bounded synchronous fresh view; replace with a digest- and
     // authority-bound admitted cache only when that cache has equivalent proof.
     let mut remaining = 64 * 1024 * 1024usize;
-    BM25Index::build_from_admitted_sources(&root, |relative| {
+    // The scope narrows the walk itself, so the file budget counts only the
+    // sources the caller asked about.
+    let in_scope = |relative: &str| filter.matches(relative);
+    BM25Index::build_from_admitted_sources(&root, filter.subdir(), &in_scope, |relative| {
         if !filter.matches(relative) {
             return Ok(None);
         }

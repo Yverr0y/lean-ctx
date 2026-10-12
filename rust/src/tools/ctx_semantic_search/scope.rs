@@ -116,6 +116,12 @@ impl SearchFilter {
         self
     }
 
+    /// The project-relative subdirectory the search is scoped to, if any —
+    /// where a scoped corpus walk can start.
+    pub(crate) fn subdir(&self) -> Option<&str> {
+        self.subdir.as_deref()
+    }
+
     pub(crate) fn is_active(&self) -> bool {
         self.allowed_exts.is_some() || self.path_glob.is_some() || self.subdir.is_some()
     }

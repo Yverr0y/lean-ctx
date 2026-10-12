@@ -564,9 +564,11 @@ pub(crate) fn install_claude_hook_scripts(home: &std::path::Path) {
 /// The `Read|…` tool matcher shared by every Claude redirect hook (global + project).
 const REDIRECT_MATCHER: &str = "Read|read|ReadFile|read_file|View|view|Grep|grep|Search|search|ListFiles|list_files|ListDirectory|list_directory|Glob|glob";
 
-/// PostToolUse matcher for the guard-safe re-read dedup (GL #1140): Read only —
-/// the handler mirrors the Read result shape and must never see another tool's.
-const READ_DEDUP_MATCHER: &str = "Read";
+/// PostToolUse matcher for the guard-safe re-read dedup (GL #1140): the native
+/// Read and lean-ctx's own `ctx_read`, whose server-side stub is withheld on
+/// Claude Code (#1801) — the hook knows the reading agent, the server does not.
+/// The handler mirrors each result shape and passes every other tool through.
+pub(super) const READ_DEDUP_MATCHER: &str = "Read|mcp__lean-ctx__ctx_read|mcp__lean_ctx__ctx_read";
 
 /// Ensure the PostToolUse `hook read-dedup` entry exists exactly once (GL #1140).
 ///
@@ -1163,9 +1165,15 @@ mod tests {
         assert_eq!(dedup_entries.len(), 1, "exactly one read-dedup group");
         assert_eq!(
             dedup_entries[0].get("matcher").and_then(|m| m.as_str()),
-            Some("Read"),
-            "read-dedup must match ONLY the Read tool (shape safety)"
+            Some("Read|mcp__lean-ctx__ctx_read|mcp__lean_ctx__ctx_read"),
+            "read-dedup must match ONLY Read and lean-ctx ctx_read (shape safety)"
         );
+        for tool in crate::hook_handlers::read_dedup_tools() {
+            assert!(
+                READ_DEDUP_MATCHER.split('|').any(|m| m == tool),
+                "installer matcher misses {tool}, which the handler dedups"
+            );
+        }
         let observe_present = post.iter().any(|g| {
             g.get("hooks").and_then(|h| h.as_array()).is_some_and(|h| {
                 h.iter().any(|hook| {

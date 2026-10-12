@@ -429,6 +429,62 @@ fn enrich_keywords_with_ib_intent(task: &str, keywords: Vec<String>) -> Vec<Stri
     })
 }
 
+/// Prose and documentation formats. An identifier's mentions there rank below
+/// its definition and its uses in code.
+const PROSE_GLOBS: &str = "*.{md,mdx,markdown,rst,txt,adoc}";
+
+/// Exact-match evidence for `primary`, best first: definitions, then uses in
+/// code, and prose mentions only when code has none. A single capped search in
+/// walk order used to fill all ten slots with whatever came first — root-level
+/// docs and agent rule files — so the code the task asked about never showed.
+fn exact_matches_section(
+    primary: &str,
+    project_root: &str,
+    crp_mode: CrpMode,
+    allow_secret: bool,
+) -> String {
+    let search = |pattern: &str, max: usize, exclude: Option<&str>| {
+        crate::tools::ctx_search::handle_filtered(
+            pattern,
+            project_root,
+            None,
+            max,
+            crp_mode,
+            true,
+            allow_secret,
+            false,
+            exclude,
+            None,
+        )
+        .text
+    };
+    let found = |text: &str| {
+        let t = text.trim_start();
+        !(t.is_empty() || t.starts_with("0 matches") || t.starts_with("ERR"))
+    };
+    let mut out = String::new();
+    let definition = format!(
+        r"\b(?:fn|struct|enum|trait|type|const|static|mod|class|interface|def|func|function)\s+{}\b",
+        regex::escape(primary)
+    );
+    let defs = search(&definition, 5, None);
+    if found(&defs) {
+        out.push_str("Definitions:\n");
+        out.push_str(defs.trim());
+        out.push('\n');
+    }
+    let code = search(primary, 10, Some(PROSE_GLOBS));
+    if found(&code) {
+        out.push_str("Uses in code:\n");
+        out.push_str(code.trim());
+        out.push('\n');
+    } else {
+        out.push_str(search(primary, 10, None).trim());
+        out.push('\n');
+    }
+    out
+}
+
 /// Compose a single rich response for `task`.
 pub fn handle(task: &str, project_root: &str, crp_mode: CrpMode) -> (String, usize) {
     crate::core::policy::runtime::with_project_source_view(project_root, || {
@@ -488,20 +544,13 @@ fn handle_in_view(task: &str, project_root: &str, crp_mode: CrpMode) -> (String,
         .iter()
         .find(|keyword| is_code_identifier(keyword))
     {
-        let grep = crate::tools::ctx_search::handle(
+        out.push_str(&format!("\n## Exact matches: '{primary}'\n"));
+        out.push_str(&exact_matches_section(
             primary,
             project_root,
-            None,
-            10,
             crp_mode,
-            true,
             allow_secret,
-            false,
-        )
-        .text;
-        out.push_str(&format!("\n## Exact matches: '{primary}'\n"));
-        out.push_str(grep.trim());
-        out.push('\n');
+        ));
     }
 
     // 3. Inline the symbol bodies that best cover the task keywords. Rather
@@ -745,6 +794,47 @@ mod tests {
 
         let prose = extract_keywords("Fix semantic ranking exact matches", 6);
         assert!(prose.iter().all(|keyword| !is_code_identifier(keyword)));
+    }
+
+    /// Regression: root-level docs that mention the identifier came first in
+    /// walk order and filled every slot; the definition in code never showed.
+    #[test]
+    fn exact_matches_rank_definition_and_code_above_prose() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("AGENTS.md"), "use widget_factory\n".repeat(30)).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn widget_factory() -> u8 { 1 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn main() { lib::widget_factory(); }\n",
+        )
+        .unwrap();
+        let root_str = root.to_str().unwrap();
+        let out = crate::core::policy::runtime::with_project_source_view(root_str, || {
+            exact_matches_section("widget_factory", root_str, CrpMode::Off, false)
+        })
+        .expect("source view");
+
+        let defs = out.find("Definitions:").expect("definition section");
+        let uses = out.find("Uses in code:").expect("code section");
+        assert!(defs < uses, "{out}");
+        assert!(out.contains("lib.rs:1"), "definition found: {out}");
+        assert!(out.contains("main.rs:1"), "use found: {out}");
+        assert!(
+            !out.contains("AGENTS.md"),
+            "prose only when code has none: {out}"
+        );
+
+        let prose_only = crate::core::policy::runtime::with_project_source_view(root_str, || {
+            exact_matches_section("use", root_str, CrpMode::Off, false)
+        })
+        .expect("source view");
+        assert!(prose_only.contains("AGENTS.md"), "{prose_only}");
     }
 
     #[test]
