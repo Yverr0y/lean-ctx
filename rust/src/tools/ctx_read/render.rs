@@ -396,15 +396,7 @@ pub(crate) fn process_mode_tuned(
                 )
             };
             let output = format!("{header}\n{guarded_output}");
-            let sent = count_tokens(&output);
-            if !monotonic_check(original_tokens, sent) {
-                return raw_fallback(file_path, content, original_tokens, sent);
-            }
-            let savings = protocol::format_savings(original_tokens, sent);
-            (
-                append_compressed_hint(&format!("{output}\n{savings}"), file_path),
-                sent,
-            )
+            finish_lossy_view(&output, content, original_tokens, file_path)
         }
         // `diff` is a delta view rendered against the session cache by
         // `core_logic::handle_diff`, not a whole-file render — there is no
@@ -1250,11 +1242,7 @@ fn render_entropy(content: &str, ctx: RenderCtx<'_>, tuning: &ReadTuning<'_>) ->
         techniques_tag(&result.techniques),
         result.output
     );
-    let sent = count_tokens(&output);
-    if !monotonic_check(original_tokens, sent) {
-        return raw_fallback(file_path, content, original_tokens, sent);
-    }
-    let savings = protocol::format_savings(original_tokens, sent);
+    let (delivered, sent) = finish_lossy_view(&output, content, original_tokens, file_path);
     let compression_ratio = if original_tokens > 0 {
         1.0 - (sent as f64 / original_tokens as f64)
     } else {
@@ -1264,10 +1252,29 @@ fn render_entropy(content: &str, ctx: RenderCtx<'_>, tuning: &ReadTuning<'_>) ->
         file_path,
         compression_ratio > 0.15,
     );
-    (
-        append_compressed_hint(&format!("{output}\n{savings}"), file_path),
-        sent,
-    )
+    (delivered, sent)
+}
+
+/// Appends the savings line and recovery hint to a lossy view, and keeps the
+/// view only when what is *delivered* still beats the raw file (#361). The
+/// footer counts: an entropy view a few tokens under raw on a CRLF checkout
+/// went over it once the footer was added, with no "no compression" notice.
+fn finish_lossy_view(
+    output: &str,
+    content: &str,
+    original_tokens: usize,
+    file_path: &str,
+) -> (String, usize) {
+    let sent = count_tokens(output);
+    if !monotonic_check(original_tokens, sent) {
+        return raw_fallback(file_path, content, original_tokens, sent);
+    }
+    let savings = protocol::format_savings(original_tokens, sent);
+    let delivered = append_compressed_hint(&format!("{output}\n{savings}"), file_path);
+    if !monotonic_check(original_tokens, count_tokens(&delivered)) {
+        return raw_fallback(file_path, content, original_tokens, sent);
+    }
+    (delivered, sent)
 }
 
 /// Renders a task-mode selection as numbered lines with explicit gap markers.
