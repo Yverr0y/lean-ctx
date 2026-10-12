@@ -1408,9 +1408,13 @@ fn inferred_session_task_does_not_steer_a_read() {
         !task_intent_steers_read(Some("inferred")),
         "a fabricated task must not filter or pin a file"
     );
+    assert!(
+        !task_intent_steers_read(Some("git")),
+        "dirty-file state (often unrelated earlier work) is not a stated task"
+    );
 
-    // Every intent that reflects a real signal still steers.
-    for stated in ["explicit", "plan", "git", "user"] {
+    // Every intent that reflects something the caller or a plan actually said.
+    for stated in ["explicit", "plan", "user"] {
         assert!(
             task_intent_steers_read(Some(stated)),
             "`{stated}` is grounded in something the caller or repo actually said"
@@ -1427,10 +1431,22 @@ fn inferred_session_task_does_not_steer_a_read() {
 /// this fails loudly instead of silently re-enabling the bug (#1590).
 #[test]
 fn auto_inferred_tasks_are_tagged_with_the_marker_we_filter_on() {
+    use crate::core::session::{GIT_TASK_INTENT, INFERRED_TASK_INTENT};
+    assert_eq!(
+        INFERRED_TASK_INTENT, "inferred",
+        "persisted sessions carry it"
+    );
+    assert_eq!(GIT_TASK_INTENT, "git", "persisted sessions carry it");
     let mut state = crate::core::session::SessionState::default();
-    state.set_task("Working on /repo/src/printer (explore)", Some("inferred"));
+    state.set_task(
+        "Working on /repo/src/printer (explore)",
+        Some(INFERRED_TASK_INTENT),
+    );
     let intent = state.task.as_ref().and_then(|t| t.intent.clone());
-    assert_eq!(intent.as_deref(), Some("inferred"));
+    assert!(!task_intent_steers_read(intent.as_deref()));
+    state.task = None;
+    state.set_task("Uncommitted changes: a.rs", Some(GIT_TASK_INTENT));
+    let intent = state.task.as_ref().and_then(|t| t.intent.clone());
     assert!(!task_intent_steers_read(intent.as_deref()));
 }
 

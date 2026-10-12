@@ -22,6 +22,46 @@ pub(crate) const SESSION_FLUSH_INTERVAL: std::time::Duration = std::time::Durati
 static FILE_TRAJECTORY: LazyLock<Mutex<FileTrajectory>> =
     LazyLock::new(|| Mutex::new(FileTrajectory::new(100)));
 
+/// `TaskInfo.intent` of a task `auto_infer_task` built from touched-file
+/// patterns. A label, never a stated task (#1590).
+pub(crate) const INFERRED_TASK_INTENT: &str = "inferred";
+/// `TaskInfo.intent` of a task `auto_infer_task` built from the working tree's
+/// uncommitted files. Describes state, never a stated task.
+pub(crate) const GIT_TASK_INTENT: &str = "git";
+
+/// Whether a task intent marks an `auto_infer_task` label (re-derivable, never
+/// a stated task). A plan title is a stated task and stays authoritative.
+pub(crate) fn is_auto_task_intent(intent: Option<&str>) -> bool {
+    matches!(intent, Some(INFERRED_TASK_INTENT | GIT_TASK_INTENT))
+}
+
+/// How many file names a git-derived task description lists before `+N more`.
+const GIT_TASK_MAX_FILES: usize = 3;
+
+/// Describe uncommitted files by name — `Uncommitted changes: entropy.rs,
+/// call_graph.rs (+2 more)` — instead of a `git diff --stat` summary whose only
+/// words were "files changed, insertions, deletions". `None` when clean.
+pub(super) fn describe_uncommitted_files<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    let names: Vec<&str> = paths
+        .into_iter()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| p.rsplit('/').next().unwrap_or(p))
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let listed = names[..names.len().min(GIT_TASK_MAX_FILES)].join(", ");
+    let more = names.len().saturating_sub(GIT_TASK_MAX_FILES);
+    Some(if more > 0 {
+        format!("Uncommitted changes: {listed} (+{more} more)")
+    } else {
+        format!("Uncommitted changes: {listed}")
+    })
+}
+
 /// Converts durable session signals into cross-session knowledge facts.
 pub(crate) fn extract_session_facts(
     session: &SessionState,
@@ -260,6 +300,12 @@ impl SessionState {
             intent: intent.map(std::string::ToString::to_string),
             progress_pct,
         });
+        // An auto-inferred label is not a stated task: its words must not
+        // become the structured intent that steers entropy/IB reads.
+        if is_auto_task_intent(intent) {
+            self.increment();
+            return;
+        }
 
         let touched: Vec<String> = self.files_touched.iter().map(|f| f.path.clone()).collect();
         let si = if touched.is_empty() {
@@ -278,41 +324,66 @@ impl SessionState {
     }
 
     /// Auto-infers the task from available context (plans, git diff, file patterns).
-    /// Only sets if no explicit task is already set or it's stale.
+    /// Never overwrites a stated task; an earlier *auto-inferred* one is
+    /// re-derived, so a label from a past session or a since-committed working
+    /// tree does not linger as "the task" forever.
     pub fn auto_infer_task(&mut self) {
-        // Don't overwrite explicitly set tasks
-        if self.task.is_some() {
+        if self
+            .task
+            .as_ref()
+            .is_some_and(|t| !is_auto_task_intent(t.intent.as_deref()))
+        {
             return;
         }
+        let inferred = self.infer_task();
+        let unchanged = match (&self.task, &inferred) {
+            (Some(t), Some((desc, intent))) => {
+                t.description == *desc && t.intent.as_deref() == Some(*intent)
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        if let Some((desc, intent)) = inferred {
+            self.set_task(&desc, Some(intent));
+        } else {
+            // Nothing to infer any more (plan done, tree committed): a stale
+            // auto label must not outlive the state it described.
+            self.task = None;
+            self.increment();
+        }
+    }
 
-        // Source 1: Active .cursor/plans/*.plan.md
+    /// The first available auto source: active plan, uncommitted files,
+    /// touched-file patterns. `(description, intent)`.
+    fn infer_task(&self) -> Option<(String, &'static str)> {
         if let Some(task_from_plan) = Self::infer_task_from_plans() {
-            self.set_task(&task_from_plan, Some("plan"));
-            return;
+            return Some((task_from_plan, "plan"));
         }
-
-        // Source 2: git diff summary
         if let Some(ref root) = self.project_root
             && let Some(task_from_git) = Self::infer_task_from_git(root)
         {
-            self.set_task(&task_from_git, Some("git"));
-            return;
+            return Some((task_from_git, GIT_TASK_INTENT));
         }
-
-        // Source 3: File patterns from intent engine
-        if self.files_touched.len() >= 3 {
-            let touched: Vec<String> = self.files_touched.iter().map(|f| f.path.clone()).collect();
-            let intent = crate::core::intent_engine::StructuredIntent::from_file_patterns(&touched);
-            if intent.confidence >= 0.5 {
-                let dirs: std::collections::HashSet<&str> = touched
-                    .iter()
-                    .filter_map(|f| std::path::Path::new(f).parent()?.to_str())
-                    .collect();
-                let primary_dir = dirs.iter().next().unwrap_or(&".");
-                let desc = format!("Working on {} ({})", primary_dir, intent.task_type.as_str());
-                self.set_task(&desc, Some("inferred"));
-            }
+        if self.files_touched.len() < 3 {
+            return None;
         }
+        let touched: Vec<String> = self.files_touched.iter().map(|f| f.path.clone()).collect();
+        let intent = crate::core::intent_engine::StructuredIntent::from_file_patterns(&touched);
+        if intent.confidence < 0.5 {
+            return None;
+        }
+        let dirs: std::collections::BTreeSet<&str> = touched
+            .iter()
+            .filter_map(|f| std::path::Path::new(f).parent()?.to_str())
+            .collect();
+        let primary_dir = dirs.iter().next().unwrap_or(&".");
+        Some((
+            format!("Working on {} ({})", primary_dir, intent.task_type.as_str()),
+            INFERRED_TASK_INTENT,
+        ))
     }
 
     fn infer_task_from_plans() -> Option<String> {
@@ -358,44 +429,14 @@ impl SessionState {
 
     fn infer_task_from_git(project_root: &str) -> Option<String> {
         let output = std::process::Command::new("git")
-            .args(["diff", "--stat", "--no-color"])
+            .args(["diff", "--name-only", "--no-color"])
             .current_dir(project_root)
             .output()
             .ok()?;
-
         if !output.status.success() {
             return None;
         }
-
-        let stat = String::from_utf8_lossy(&output.stdout);
-        let lines: Vec<&str> = stat.lines().collect();
-        if lines.is_empty() {
-            return None;
-        }
-
-        // Last line typically has "N files changed, M insertions(+), K deletions(-)"
-        let summary_line = lines.last()?;
-        if !summary_line.contains("changed") {
-            return None;
-        }
-
-        // Find common directory prefix
-        let file_lines: Vec<&str> = lines[..lines.len() - 1].to_vec();
-        let dirs: std::collections::HashSet<&str> = file_lines
-            .iter()
-            .filter_map(|l| {
-                let path = l.split('|').next()?.trim();
-                std::path::Path::new(path).parent()?.to_str()
-            })
-            .collect();
-
-        let primary = if dirs.len() == 1 {
-            dirs.into_iter().next().unwrap_or(".")
-        } else {
-            "multiple dirs"
-        };
-
-        Some(format!("Modified: {} in {}", summary_line.trim(), primary))
+        describe_uncommitted_files(String::from_utf8_lossy(&output.stdout).lines())
     }
 
     /// Records a finding (discovery or observation) in the session log.

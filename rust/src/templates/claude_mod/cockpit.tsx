@@ -917,7 +917,14 @@ function handoff(ui: Ui, key: string, cols: number, b: Board, tick: number, now:
 }
 
 // ── the cockpit ────────────────────────────────────────────────────────────
-export function registerCockpit(on: On): void {
+// The mod's other parts that follow main-loop turns. A plugin registers one
+// hook per event, and the cockpit owns `turn.start` / `turn.complete`.
+export type TurnObserver = {
+  onTurnStart?: () => void
+  onMainTurnComplete?: () => void
+}
+
+export function registerCockpit(on: On, turns: TurnObserver = {}): void {
   // A matcher, because the mod's own `session.start` hook has none (one per
   // event and plugin); headless runs (`claude -p`) get no cockpit at all.
   on('session.start', { isInteractive: true }, async ($, e, next) => {
@@ -937,6 +944,7 @@ export function registerCockpit(on: On): void {
   })
 
   on('turn.start', async ($, e, next) => {
+    turns.onTurnStart?.()
     try {
       isWorking = true
       const b = await readBoard($)
@@ -956,6 +964,7 @@ export function registerCockpit(on: On): void {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) return next(e)
+    turns.onMainTurnComplete?.()
     isWorking = false
     const usage = 'usage' in e ? e.usage : undefined
     await update($, board, x => {

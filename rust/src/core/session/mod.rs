@@ -8,7 +8,9 @@ pub mod playbook;
 mod save_outcome;
 mod state;
 pub(crate) use journal::AttachSessionJournalV1;
-pub(crate) use state::extract_session_facts;
+#[cfg(test)]
+pub(crate) use state::{GIT_TASK_INTENT, INFERRED_TASK_INTENT};
+pub(crate) use state::{extract_session_facts, is_auto_task_intent};
 mod types;
 
 pub use playbook::{DeltaOutcome, EntryKind, Playbook, PlaybookEntry};
@@ -23,6 +25,30 @@ mod tests {
     use super::paths::{extract_cd_target, sessions_dir};
     use super::types::*;
     use chrono::{Duration, Utc};
+
+    /// A git-derived task names the uncommitted files; it was a `--stat`
+    /// summary ("Modified: 2 files changed, 19 insertions(+) … in ") whose
+    /// words then steered task-filtered reads.
+    #[test]
+    fn git_task_names_uncommitted_files_not_diff_counters() {
+        use super::state::describe_uncommitted_files;
+        assert_eq!(describe_uncommitted_files(["", "  "]), None);
+        assert_eq!(
+            describe_uncommitted_files([".gitignore", "AGENTS.md"]).as_deref(),
+            Some("Uncommitted changes: .gitignore, AGENTS.md")
+        );
+        assert_eq!(
+            describe_uncommitted_files([
+                "rust/src/core/entropy.rs",
+                "rust/src/core/call_graph.rs",
+                "rust/src/core/quality.rs",
+                "README.md",
+                "docs/a.md",
+            ])
+            .as_deref(),
+            Some("Uncommitted changes: entropy.rs, call_graph.rs, quality.rs (+2 more)")
+        );
+    }
 
     /// Bypass path "memory": findings and decisions the agent records are
     /// recalled into later context, so a credential never enters them.

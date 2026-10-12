@@ -529,11 +529,12 @@ impl CallGraph {
         Self::build_incremental_parallel(inputs, previous, None)
     }
 
+    /// Edges calling `symbol`, however the call site spells it: a query for
+    /// `write` also finds `crate::config_io::write(..)` (see [`callee_matches`]).
     pub fn callers_of(&self, symbol: &str) -> Vec<&CallEdge> {
-        let sym_lower = symbol.to_lowercase();
         self.edges
             .iter()
-            .filter(|e| e.callee_name.to_lowercase() == sym_lower)
+            .filter(|e| callee_matches(&e.callee_name, symbol))
             .collect()
     }
 
@@ -579,12 +580,12 @@ impl CallGraph {
                 BfsDirection::Callers => self
                     .edges
                     .iter()
-                    .filter(|e| e.callee_name.to_lowercase() == current)
+                    .filter(|e| callee_matches(&e.callee_name, &current))
                     .collect(),
                 BfsDirection::Callees => self
                     .edges
                     .iter()
-                    .filter(|e| e.caller_symbol.to_lowercase() == current)
+                    .filter(|e| e.caller_symbol.to_lowercase() == callee_segment(&current))
                     .collect(),
             };
 
@@ -593,7 +594,9 @@ impl CallGraph {
                     BfsDirection::Callers => &edge.caller_symbol,
                     BfsDirection::Callees => &edge.callee_name,
                 };
-                let next_lower = next_sym.to_lowercase();
+                // Caller symbols are bare names, so a path callee continues the
+                // walk (and dedups) under its last segment.
+                let next_lower = callee_segment(next_sym).to_lowercase();
 
                 if !visited.insert(next_lower.clone()) {
                     continue;
@@ -625,8 +628,10 @@ impl CallGraph {
     pub fn find_call_path(&self, from: &str, to: &str) -> Option<Vec<PathHop>> {
         use std::collections::{HashMap as BfsMap, VecDeque};
 
-        let from_lower = from.to_lowercase();
-        let to_lower = to.to_lowercase();
+        // Walk by bare names: caller symbols are bare, path callees continue
+        // under their last segment.
+        let from_lower = callee_segment(from).to_lowercase();
+        let to_lower = callee_segment(to).to_lowercase();
 
         if from_lower == to_lower {
             return Some(vec![PathHop {
@@ -658,7 +663,7 @@ impl CallGraph {
                 .collect();
 
             for edge in callees {
-                let next = edge.callee_name.to_lowercase();
+                let next = callee_segment(&edge.callee_name).to_lowercase();
                 if visited.contains_key(&next) {
                     continue;
                 }
@@ -950,6 +955,78 @@ pub fn callee_segment(name: &str) -> &str {
         .unwrap_or(name)
 }
 
+/// Lower-cased path segments of a callee or query, without the relative
+/// anchors that do not name anything (`crate`, `self`, `super`, `Self`):
+/// `crate::config_io::write` → `["config_io", "write"]`.
+fn path_segments(name: &str) -> Vec<String> {
+    name.split(|c: char| c == ':' || c == '.')
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase)
+        .filter(|s| !matches!(s.as_str(), "crate" | "self" | "super"))
+        .collect()
+}
+
+/// Whether a call to `callee_name` is a call to the symbol named by `query`.
+///
+/// Edges keep the callee as written, so `crate::config_io::write(..)` and
+/// `config_io::write(..)` must match a query for `write`, and a qualified query
+/// (`config_io::write`) must match the bare and the qualified spelling. The
+/// shorter path must be a segment suffix of the longer one, so `a::save` never
+/// matches `b::save`.
+pub fn callee_matches(callee_name: &str, query: &str) -> bool {
+    let callee = path_segments(callee_name);
+    let query = path_segments(query);
+    if callee.is_empty() || query.is_empty() {
+        return false;
+    }
+    let (short, long) = if callee.len() <= query.len() {
+        (&callee, &query)
+    } else {
+        (&query, &callee)
+    };
+    long.ends_with(short)
+}
+
+/// Narrow `defs` (files defining the callee's last segment) to the files the
+/// callee's own path names: `config_io::write` → `…/config_io.rs` or
+/// `…/config_io/mod.rs`; `CallGraph::build` → the file that also defines
+/// `CallGraph`. Returns the single named file, or `None` when the qualifier
+/// names no definition file or several (never guesses).
+fn module_path_def_file<'a>(
+    callee_name: &str,
+    defs: &[&'a str],
+    type_files: &HashMap<&str, Vec<&str>>,
+) -> Option<&'a str> {
+    let segments: Vec<&str> = callee_name
+        .split(|c: char| c == ':' || c == '.')
+        .filter(|s| !s.is_empty() && !matches!(*s, "crate" | "self" | "super" | "Self"))
+        .collect();
+    let qualifier = *segments
+        .len()
+        .checked_sub(2)
+        .and_then(|i| segments.get(i))?;
+    let names_module = |file: &str| -> bool {
+        let path = Path::new(file);
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if stem == qualifier {
+            return true;
+        }
+        matches!(stem, "mod" | "index" | "__init__" | "lib")
+            && path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                == Some(qualifier)
+    };
+    let type_defs = type_files.get(qualifier);
+    let mut named = defs
+        .iter()
+        .copied()
+        .filter(|d| names_module(d) || type_defs.is_some_and(|files| files.contains(d)));
+    let first = named.next()?;
+    named.next().is_none().then_some(first)
+}
+
 /// Which scope step resolved a callee structurally — the strength of the
 /// evidence. Same-file and imported definitions are bound by the caller's own
 /// scope; a name that is merely unique project-wide may still be an external
@@ -959,6 +1036,10 @@ pub enum ScopeMatch {
     SameFile,
     UniqueImport,
     UniqueInProject,
+    /// The call's own path names the defining module or type
+    /// (`config_io::write` → `config_io.rs`), and exactly one such file
+    /// defines the callee.
+    ModulePath,
 }
 
 /// Structural view of one call edge's callee.
@@ -1022,13 +1103,18 @@ pub fn resolve_edge_callee_targets(
     inputs: &CallGraphInputs,
     edges: &[CallEdge],
 ) -> Vec<StructuralTarget> {
-    let callee_names: std::collections::HashSet<&str> =
-        edges.iter().map(|e| e.callee_name.as_str()).collect();
+    let callee_names: std::collections::HashSet<&str> = edges
+        .iter()
+        .flat_map(|e| [e.callee_name.as_str(), callee_segment(&e.callee_name)])
+        .collect();
     if callee_names.is_empty() {
         return Vec::new();
     }
 
+    // Definition files per name: callee names, their last path segment, and
+    // capitalised names (types a path like `CallGraph::build` may qualify by).
     let mut name_files: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut type_files: HashMap<&str, Vec<&str>> = HashMap::new();
     for sym in &inputs.symbols {
         if callee_names.contains(sym.name.as_str()) {
             name_files
@@ -1036,21 +1122,17 @@ pub fn resolve_edge_callee_targets(
                 .or_default()
                 .push(sym.file.as_str());
         }
+        if sym.name.starts_with(char::is_uppercase) {
+            type_files
+                .entry(sym.name.as_str())
+                .or_default()
+                .push(sym.file.as_str());
+        }
     }
-    for files in name_files.values_mut() {
+    for files in name_files.values_mut().chain(type_files.values_mut()) {
         files.sort_unstable();
         files.dedup();
     }
-
-    // Path callees (`db::save`) keep their full path as name, so a plain
-    // name lookup never finds them. Their last segment being defined in the
-    // project makes them a semantic candidate — never a structural guess.
-    let segment_defined: std::collections::HashSet<&str> =
-        inputs.symbols.iter().map(|s| s.name.as_str()).collect();
-    let last_segment = |name: &str| -> Option<String> {
-        let seg = callee_segment(name);
-        (seg.len() < name.len() && segment_defined.contains(seg)).then(|| seg.to_string())
-    };
 
     let imports = build_import_adjacency(inputs);
     edges
@@ -1059,16 +1141,42 @@ pub fn resolve_edge_callee_targets(
             // Only definitions the caller's language can call directly: a Rust
             // `run()` never binds to a shell script's `run`.
             let family = call_family(&e.caller_file);
-            let defs: Option<Vec<&str>> = name_files.get(e.callee_name.as_str()).map(|defs| {
-                defs.iter()
-                    .copied()
-                    .filter(|d| {
-                        family.is_none() || call_family(d).is_none_or(|f| Some(f) == family)
-                    })
-                    .collect()
-            });
-            match defs.filter(|d| !d.is_empty()) {
-                None if last_segment(&e.callee_name).is_some() => StructuralTarget::Ambiguous,
+            let segment = callee_segment(&e.callee_name);
+            if segment.len() < e.callee_name.len() {
+                // Path callee (`db::save`): bind it only when its own path names
+                // exactly one defining file; otherwise it is a semantic
+                // candidate, never a structural guess by bare name.
+                let Some(defs) = name_files
+                    .get(segment)
+                    .map(|defs| same_family_defs(defs, family))
+                    .filter(|d| !d.is_empty())
+                else {
+                    return StructuralTarget::Unknown;
+                };
+                // `Self::new()` / `self::helper()` name the caller's own type or
+                // module: bound when the caller's file defines the callee.
+                let own_scope = ["Self::", "self::"]
+                    .iter()
+                    .any(|p| e.callee_name.starts_with(p));
+                if own_scope && defs.contains(&e.caller_file.as_str()) {
+                    return StructuralTarget::Resolved {
+                        file: e.caller_file.clone(),
+                        via: ScopeMatch::SameFile,
+                    };
+                }
+                return match module_path_def_file(&e.callee_name, &defs, &type_files) {
+                    Some(file) => StructuralTarget::Resolved {
+                        file: file.to_string(),
+                        via: ScopeMatch::ModulePath,
+                    },
+                    None => StructuralTarget::Ambiguous,
+                };
+            }
+            let defs = name_files
+                .get(e.callee_name.as_str())
+                .map(|defs| same_family_defs(defs, family))
+                .filter(|d| !d.is_empty());
+            match defs {
                 None => StructuralTarget::Unknown,
                 Some(defs) => match rank_callee_def_file(&defs, &e.caller_file, &imports) {
                     Some((file, via)) => StructuralTarget::Resolved { file, via },
@@ -1076,6 +1184,15 @@ pub fn resolve_edge_callee_targets(
                 },
             }
         })
+        .collect()
+}
+
+/// Only definitions the caller's language `family` can call directly: a Rust
+/// `run()` never binds to a shell script's `run`.
+fn same_family_defs<'a>(defs: &[&'a str], family: Option<&str>) -> Vec<&'a str> {
+    defs.iter()
+        .copied()
+        .filter(|d| family.is_none() || call_family(d).is_none_or(|f| Some(f) == family))
         .collect()
 }
 

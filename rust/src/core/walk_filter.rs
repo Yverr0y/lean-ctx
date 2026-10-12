@@ -110,11 +110,59 @@ pub(crate) fn is_agent_worktree_dir(entry: &ignore::DirEntry) -> bool {
 /// worktree copies, and excluding them is a separate, deliberate rule.
 pub(crate) const SKIP_HIDDEN_IN_CONTENT_WALK: bool = false;
 
+/// Returns `true` when `entry` is a *linked git worktree checked out inside
+/// its own repository*, whatever the directory is called: its `.git` is a file
+/// pointing into `<repo>/.git/worktrees/<name>` and `entry` lies below
+/// `<repo>`. Such a checkout is a second copy of the walked repository, so
+/// walking it duplicates every file and exhausts corpus budgets. A worktree
+/// of another repository (a folder of projects) and submodules
+/// (`.git` → `…/modules/…`) are real content and stay.
+pub(crate) fn is_linked_git_worktree(entry: &ignore::DirEntry) -> bool {
+    if entry.depth() == 0 || !entry.file_type().is_some_and(|ft| ft.is_dir()) {
+        return false;
+    }
+    let dot_git = entry.path().join(".git");
+    if !dot_git.is_file() {
+        return false;
+    }
+    let Ok(raw) = std::fs::read_to_string(&dot_git) else {
+        return false;
+    };
+    let Some(gitdir) = raw.trim().strip_prefix("gitdir:").map(str::trim) else {
+        return false;
+    };
+    let gitdir = std::path::Path::new(gitdir);
+    let gitdir = if gitdir.is_absolute() {
+        gitdir.to_path_buf()
+    } else {
+        entry.path().join(gitdir)
+    };
+    // `<repo>/.git/worktrees/<name>` → `<repo>`.
+    let mut ancestors = gitdir.ancestors();
+    let (Some(_name), Some(worktrees), Some(dot_git_dir), Some(repo)) = (
+        ancestors.next(),
+        ancestors.next(),
+        ancestors.next(),
+        ancestors.next(),
+    ) else {
+        return false;
+    };
+    if worktrees.file_name().is_none_or(|n| n != "worktrees")
+        || dot_git_dir.file_name().is_none_or(|n| n != ".git")
+    {
+        return false;
+    }
+    let canonical = |p: &std::path::Path| crate::core::pathutil::safe_canonicalize_or_self(p);
+    canonical(entry.path()).starts_with(canonical(repo))
+}
+
 /// Predicate for `ignore::WalkBuilder::filter_entry`: prunes vendor
-/// directories, stale agent worktree copies, and cloud placeholders.
+/// directories, stale agent worktree copies (named or linked), and cloud
+/// placeholders.
 pub(crate) fn keep_entry(entry: &ignore::DirEntry) -> bool {
     !is_vendor_dir(entry)
         && !is_agent_worktree_dir(entry)
+        && !is_linked_git_worktree(entry)
         && crate::core::cloud_files::keep_entry(entry)
 }
 
@@ -332,6 +380,70 @@ mod tests {
 
         assert!(seen.iter().any(|p| p.ends_with(".editorconfig")));
         assert!(!seen.iter().any(|p| p.contains(".codex-worktrees")));
+    }
+
+    /// A linked worktree checked out inside its own repository under any name
+    /// is a second copy of that repository; a submodule, and a worktree of
+    /// another repository (a folder of projects), are not.
+    #[test]
+    fn linked_git_worktrees_are_skipped_submodules_are_not() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".git/worktrees/wt-feature")).expect("mkdir");
+        std::fs::create_dir_all(root.join("wt-feature/src")).expect("mkdir");
+        std::fs::write(
+            root.join("wt-feature/.git"),
+            format!(
+                "gitdir: {}\n",
+                root.join(".git/worktrees/wt-feature").display()
+            ),
+        )
+        .expect("write");
+        std::fs::write(root.join("wt-feature/src/copy.rs"), "x").expect("write");
+        std::fs::create_dir_all(root.join("other-project")).expect("mkdir");
+        std::fs::write(
+            root.join("other-project/.git"),
+            "gitdir: /elsewhere/other/.git/worktrees/other-project\n",
+        )
+        .expect("write");
+        std::fs::write(root.join("other-project/own.rs"), "z").expect("write");
+        std::fs::create_dir_all(root.join("vendor/lib")).expect("mkdir");
+        std::fs::write(
+            root.join("vendor/lib/.git"),
+            "gitdir: ../../.git/modules/vendor/lib\n",
+        )
+        .expect("write");
+        std::fs::write(root.join("vendor/lib/real.rs"), "y").expect("write");
+
+        let seen: Vec<String> = ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .filter_entry(keep_entry)
+            .build()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path().to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            seen.iter().any(|p| p.ends_with("real.rs")),
+            "submodule kept"
+        );
+        assert!(
+            seen.iter().any(|p| p.ends_with("own.rs")),
+            "another repository's worktree is its own project"
+        );
+        assert!(
+            !seen.iter().any(|p| p.ends_with("copy.rs")),
+            "a worktree nested in its own repository is pruned"
+        );
+        let wt_root = ignore::WalkBuilder::new(root.join("wt-feature"))
+            .build()
+            .filter_map(std::result::Result::ok)
+            .find(|e| e.depth() == 0)
+            .expect("root entry");
+        assert!(
+            keep_entry(&wt_root),
+            "an explicitly requested worktree stays walkable"
+        );
     }
 
     #[test]

@@ -353,6 +353,8 @@ fn prune_kind(entry: &ignore::DirEntry) -> Option<&'static str> {
         Some("dependency/vendor directory, never indexed")
     } else if crate::core::walk_filter::is_agent_worktree_dir(entry) {
         Some("agent worktree copy, never indexed")
+    } else if crate::core::walk_filter::is_linked_git_worktree(entry) {
+        Some("linked git worktree (a second checkout of the repository), never indexed")
     } else if !crate::core::cloud_files::keep_entry(entry) {
         Some("cloud placeholder that is not downloaded")
     } else {

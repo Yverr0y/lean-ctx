@@ -67,11 +67,13 @@ fn compute_read_dedup(input: &str) -> Option<String> {
 
     let v: serde_json::Value = serde_json::from_str(input).ok()?;
 
-    // Only successful native Read results are dedupable; other tools have
-    // shapes we must not touch (the installer's matcher already scopes to
-    // Read, this is the in-process seatbelt).
-    if payload::resolve_tool_name(&v).as_deref() != Some("Read") {
-        return None;
+    // Only native Read and lean-ctx `ctx_read` results are dedupable; other
+    // tools have shapes we must not touch (the installer's matcher already
+    // scopes to these, this is the in-process seatbelt).
+    match payload::resolve_tool_name(&v).as_deref() {
+        Some("Read") => {}
+        Some(name) if CTX_READ_TOOLS.contains(&name) => return compute_ctx_read_dedup(&v),
+        _ => return None,
     }
 
     let tool_input = payload::resolve_tool_args(&v);
@@ -159,6 +161,107 @@ fn compute_read_dedup(input: &str) -> Option<String> {
             }
         })
         .to_string(),
+    )
+}
+
+/// lean-ctx's `ctx_read` as Claude Code / CodeBuddy name it (server `lean-ctx`,
+/// or `lean_ctx` where the host normalises the dash).
+pub(crate) const CTX_READ_TOOLS: [&str; 2] = ["mcp__lean-ctx__ctx_read", "mcp__lean_ctx__ctx_read"];
+
+/// Re-read dedup for lean-ctx's own `ctx_read` on guard hosts (Claude Code).
+///
+/// The MCP server cannot tell who calls it there: sub-agents share the
+/// parent's connection, so its `[unchanged]` stub is withheld outright
+/// (#1801) and every re-read re-delivered the whole result. This hook *can*
+/// tell — the payload carries `session_id` and, for a sub-agent, `agent_id` —
+/// so the stub returns here, keyed per reading context.
+///
+/// The criterion is stricter than the native Read's file hash: a stub replaces
+/// a result only when the **identical bytes** were already delivered to this
+/// context for the identical arguments. A re-read whose rendering differs
+/// (file changed, `auto` resolving another mode, a new footer) passes through.
+/// `fresh=true` / `raw=true` always pass through.
+fn compute_ctx_read_dedup(v: &serde_json::Value) -> Option<String> {
+    let tool_input = payload::resolve_tool_args(v)?;
+    let forced = |key: &str| {
+        tool_input
+            .get(key)
+            .is_some_and(|f| f.as_bool() == Some(true) || f.as_str() == Some("true"))
+    };
+    if forced("fresh") || forced("raw") {
+        return None;
+    }
+    let label = tool_input
+        .get("path")
+        .and_then(|p| p.as_str())
+        .unwrap_or("ctx_read")
+        .to_string();
+    let session_id = v.get("session_id").and_then(|s| s.as_str())?;
+    let agent_id = v
+        .get("agent_id")
+        .and_then(|s| s.as_str())
+        .unwrap_or_default();
+    let tool_use_id = v
+        .get("tool_use_id")
+        .and_then(|s| s.as_str())
+        .unwrap_or_default();
+
+    let tool_response = v.get("tool_response")?;
+    let slot = locate_content(tool_response)?;
+    let original = slot_text(tool_response, &slot)?;
+    if original.len() < MIN_DEDUP_BYTES || original.starts_with("ERR") {
+        return None;
+    }
+    let delivered = blake3::hash(original.as_bytes()).to_hex().to_string();
+    // The full argument object is the read variant: path, mode, line range,
+    // task, aggressiveness … (serde_json maps serialise in key order).
+    let variant = format!("ctx_read\u{0}{tool_input}");
+    let store = record_path(session_id, agent_id, &variant, 0, 0)?;
+
+    let Ok(prev) = std::fs::read_to_string(&store) else {
+        write_record(&store, &delivered, tool_use_id);
+        return None;
+    };
+    let (prev_delivered, prev_tool_use) = parse_record(&prev)?;
+    if prev_delivered != delivered || (!tool_use_id.is_empty() && prev_tool_use == tool_use_id) {
+        write_record(&store, &delivered, tool_use_id);
+        return None;
+    }
+
+    let stub = render_ctx_read_dedup_stub(&label, original.lines().count());
+    if stub.len() >= original.len() {
+        return None;
+    }
+    let updated = replace_slot(tool_response, &slot, &stub)?;
+
+    let original_tokens = crate::core::tokens::count_tokens(original);
+    let stub_tokens = crate::core::tokens::count_tokens(&stub);
+    crate::core::stats::record("ctx_read_dedup", original_tokens, stub_tokens);
+    crate::core::stats::record_reread(original_tokens.saturating_sub(stub_tokens));
+    crate::core::stats::flush();
+
+    debug_log::log_hook_decision(
+        "read-dedup",
+        "ctx_read",
+        Route::LeanCtx,
+        &label,
+        "identical ctx_read result already delivered to this context → dedup stub",
+    );
+    Some(
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "updatedToolOutput": updated,
+            }
+        })
+        .to_string(),
+    )
+}
+
+/// Deterministic (#498) stub for a deduplicated `ctx_read`.
+fn render_ctx_read_dedup_stub(path: &str, line_count: usize) -> String {
+    format!(
+        "{path} [unchanged {line_count}L · lean-ctx read-dedup]\nIdentical to your earlier ctx_read with these arguments in this conversation — that result is above. Pass fresh=true to re-deliver it."
     )
 }
 
@@ -794,5 +897,134 @@ mod tests {
             render_dedup_stub("/a/b.rs", 42),
             render_dedup_stub("/a/b.rs", 42)
         );
+    }
+
+    /// Claude Code's MCP result shape: a content-block array.
+    fn ctx_read_payload(
+        session: &str,
+        agent: Option<&str>,
+        tool_use: &str,
+        input: &serde_json::Value,
+        text: &str,
+    ) -> String {
+        let mut p = serde_json::json!({
+            "session_id": session,
+            "tool_use_id": tool_use,
+            "hook_event_name": "PostToolUse",
+            "tool_name": "mcp__lean-ctx__ctx_read",
+            "tool_input": input,
+            "tool_response": [{ "type": "text", "text": text }],
+        });
+        if let Some(agent) = agent {
+            p["agent_id"] = serde_json::json!(agent);
+        }
+        p.to_string()
+    }
+
+    fn stubbed_text(out: &str) -> String {
+        let v: serde_json::Value = serde_json::from_str(out).unwrap();
+        v["hookSpecificOutput"]["updatedToolOutput"][0]["text"]
+            .as_str()
+            .expect("content block mirrored")
+            .to_string()
+    }
+
+    /// #1801 left Claude Code without any ctx_read re-read savings: the MCP
+    /// server cannot tell a sub-agent from its parent. The hook can.
+    #[test]
+    fn ctx_read_reread_is_stubbed_per_reading_context() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let _guard = guard_env();
+        let session = unique_session("cr1");
+        let input = serde_json::json!({ "path": "/repo/src/main.rs", "mode": "full" });
+        let body = big_body();
+        let run = |agent: Option<&str>, tool_use: &str| {
+            compute_read_dedup(&ctx_read_payload(&session, agent, tool_use, &input, &body))
+        };
+
+        assert!(run(None, "t1").is_none(), "first read delivers the result");
+        let stub = stubbed_text(&run(None, "t2").expect("identical re-read is stubbed"));
+        assert!(
+            stub.starts_with("/repo/src/main.rs [unchanged 100L"),
+            "{stub}"
+        );
+        assert!(stub.contains("fresh=true"), "the escape is named: {stub}");
+        assert!(
+            run(Some("sub-1"), "t3").is_none(),
+            "a sub-agent never saw the parent's result: full delivery"
+        );
+        assert!(
+            run(Some("sub-1"), "t4").is_some(),
+            "…but its own re-read stubs"
+        );
+    }
+
+    #[test]
+    fn ctx_read_dedup_requires_identical_bytes_and_identical_arguments() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let _guard = guard_env();
+        let session = unique_session("cr2");
+        let body = big_body();
+        let call = |input: &serde_json::Value, text: &str, tool_use: &str| {
+            compute_read_dedup(&ctx_read_payload(&session, None, tool_use, input, text))
+        };
+        let full = serde_json::json!({ "path": "/repo/a.rs", "mode": "full" });
+
+        assert!(call(&full, &body, "t1").is_none());
+        let changed = format!("{body}// edited\n");
+        assert!(
+            call(&full, &changed, "t2").is_none(),
+            "different rendering (file changed, auto picked another mode) passes through"
+        );
+        assert!(
+            call(&full, &changed, "t3").is_some(),
+            "re-armed on new bytes"
+        );
+        assert!(
+            call(
+                &serde_json::json!({ "path": "/repo/a.rs", "mode": "map" }),
+                &changed,
+                "t4"
+            )
+            .is_none(),
+            "another mode is another read"
+        );
+        assert!(
+            call(
+                &serde_json::json!({ "path": "/repo/a.rs", "mode": "full", "fresh": true }),
+                &changed,
+                "t5"
+            )
+            .is_none(),
+            "fresh=true is the explicit escape and is never stubbed"
+        );
+        assert!(
+            call(&full, &changed, "t2").is_none(),
+            "a duplicate fire of the delivering tool_use passes through"
+        );
+        assert!(
+            call(&full, "ERROR: file not found", "t6").is_none(),
+            "errors are never recorded or stubbed"
+        );
+    }
+
+    #[test]
+    fn ctx_read_dedup_ignores_other_lean_ctx_tools() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let _guard = guard_env();
+        let session = unique_session("cr3");
+        let body = big_body();
+        let mut p: serde_json::Value = serde_json::from_str(&ctx_read_payload(
+            &session,
+            None,
+            "t1",
+            &serde_json::json!({ "command": "git log" }),
+            &body,
+        ))
+        .unwrap();
+        p["tool_name"] = serde_json::json!("mcp__lean-ctx__ctx_shell");
+        let p = p.to_string();
+        assert!(compute_read_dedup(&p).is_none());
+        assert!(compute_read_dedup(&p.replace("\"t1\"", "\"t2\"")).is_none());
     }
 }

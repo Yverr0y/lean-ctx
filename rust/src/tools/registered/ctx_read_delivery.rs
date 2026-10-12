@@ -188,7 +188,16 @@ impl PendingReadDelivery {
                         session.active_structured_intent = Some(inferred);
                     }
                 }
-                if session.task.is_none() && session.stats.files_read % 5 == 0 {
+                // Infer a missing task early (every 5 reads); refresh an
+                // inferred one rarely — each inference runs `git diff`.
+                let infer_now = match session.task.as_ref() {
+                    None => session.stats.files_read % 5 == 0,
+                    Some(t) => {
+                        crate::core::session::is_auto_task_intent(t.intent.as_deref())
+                            && session.stats.files_read % 50 == 0
+                    }
+                };
+                if infer_now {
                     session.auto_infer_task();
                 }
                 let root_missing = session

@@ -372,7 +372,7 @@ pub(crate) fn process_mode_tuned(
                 .aggressiveness
                 .map(|a| AggressivenessProfile::from_level(a).density_target);
             let target: f64 = mode[8..].parse().ok().or(aggr_target).unwrap_or(0.5);
-            let result = entropy::entropy_compress_to_density(content, target);
+            let result = entropy::entropy_compress_to_density_for(content, target, ext);
             // #798: Quality gate — reject density output that breaks AST/symbols.
             // #940: use density-specific guard that only checks AST/identifiers,
             // not line count — density mode *intentionally* reduces lines.

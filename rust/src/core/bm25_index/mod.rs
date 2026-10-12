@@ -328,8 +328,14 @@ impl BM25Index {
 
     /// Ephemeral retrieval view: admit each complete original source before
     /// tokenization. Never consult metadata-only caches or persist this view.
+    ///
+    /// `subdir` / `in_scope` narrow the walk itself (see
+    /// [`list_scoped_code_files`]), so the file budget counts only sources the
+    /// caller asked about.
     pub(crate) fn build_from_admitted_sources(
         root: &Path,
+        subdir: Option<&str>,
+        in_scope: &dyn Fn(&str) -> bool,
         mut admit: impl FnMut(&str) -> Result<Option<String>, String>,
     ) -> Result<Self, String> {
         if !is_safe_bm25_root(root) {
@@ -338,7 +344,8 @@ impl BM25Index {
         let mut index = Self::new();
         let mut chunk_bytes = 64 * 1024 * 1024;
         let mut chunk_count = 100_000;
-        for path in list_code_files_inner(root, true)? {
+        let sources = list_scoped_code_files(root, &CorpusRules::load(), true, subdir, in_scope)?;
+        for path in sources {
             if crate::core::memory_guard::abort_requested()
                 || crate::core::memory_guard::is_under_pressure()
             {
@@ -1286,10 +1293,6 @@ fn list_code_files_with(root: &Path, rules: &CorpusRules) -> Vec<String> {
     list_code_files_bounded(root, rules, false).unwrap_or_default()
 }
 
-fn list_code_files_inner(root: &Path, bounded: bool) -> Result<Vec<String>, String> {
-    list_code_files_bounded(root, &CorpusRules::load(), bounded)
-}
-
 /// The corpus walk. `bounded` (source-admission views) fails closed on a
 /// walk or file budget instead of silently truncating.
 fn list_code_files_bounded(
@@ -1297,8 +1300,27 @@ fn list_code_files_bounded(
     rules: &CorpusRules,
     bounded: bool,
 ) -> Result<Vec<String>, String> {
+    list_scoped_code_files(root, rules, bounded, None, &|_| true)
+}
+
+/// [`list_code_files_bounded`] restricted to the caller's scope: the walk
+/// starts at `subdir` (project-relative) and only paths `in_scope` accepts
+/// count against the walk and file budgets. A search scoped to a 20-file
+/// directory used to walk the whole project and fail its 5000-file budget
+/// before the scope was ever applied. Returned paths stay project-relative.
+fn list_scoped_code_files(
+    root: &Path,
+    rules: &CorpusRules,
+    bounded: bool,
+    subdir: Option<&str>,
+    in_scope: &dyn Fn(&str) -> bool,
+) -> Result<Vec<String>, String> {
+    let walk_root = subdir
+        .map(|s| root.join(s))
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(|| root.to_path_buf());
     let walker = rules
-        .walker(root)
+        .walker(&walk_root)
         .filter_entry(crate::core::walk_filter::keep_entry)
         .build();
 
@@ -1335,9 +1357,16 @@ fn list_code_files_bounded(
             filtered_out += 1;
             continue;
         }
+        if !in_scope(&rel) {
+            continue;
+        }
         if files.len() >= rules.max_files {
             if bounded {
-                return Err("source file budget exceeded; narrow the search scope".into());
+                return Err(format!(
+                    "source file budget exceeded ({} files); narrow the search with path=, \
+                     languages= or a glob, or raise bm25_max_files (0 = unlimited)",
+                    rules.max_files
+                ));
             }
             tracing::warn!(
                 "[bm25] file cap reached ({}), skipping remaining files in {}. \

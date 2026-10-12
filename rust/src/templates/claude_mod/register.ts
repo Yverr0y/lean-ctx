@@ -160,6 +160,11 @@ const metrics: Metrics = {
 };
 let watcher: Timer | undefined;
 let watcherTickInProgress = false;
+// True between a main-loop `turn.start` and its `turn.complete`. A wake
+// submitted then is only delivered after the turn, by which time the model
+// may have read the job itself — so finished jobs wait in `pendingWakes`.
+let mainTurnActive = false;
+const pendingWakes = new Map<string, FinishedJob>();
 let leanCtxSeen = false;
 // The lean-ctx MCP server name as this session spells it (`lean-ctx`/`lean_ctx`).
 let leanServer: string | undefined;
@@ -170,7 +175,16 @@ let resumePending = false;
 
 export const register: Register = (on, options) => {
   // The cockpit: sidebar, pulse line, turn and milestone overlays (cockpit.tsx).
-  registerCockpit(on);
+  // Held wakes go out on the next watcher tick after the turn (≤ 2 s); the
+  // watcher keeps running while any are held.
+  registerCockpit(on, {
+    onTurnStart: () => {
+      mainTurnActive = true;
+    },
+    onMainTurnComplete: () => {
+      mainTurnActive = false;
+    },
+  });
   const frontLoaded = getFrontLoadedTools(options);
   const shapeNative = asRecord(options).shape_native_output !== false;
   const keepHookContext = asRecord(options).keep_hook_context === true;
@@ -290,16 +304,17 @@ export const register: Register = (on, options) => {
       const key = jobId ? watchKey(leanCtxTool.server, jobId) : undefined;
       const job = key ? watchedJobs.get(key) : undefined;
       const result = await next(event);
-      if (!job || !key || !jobId) return result;
+      if (!key || !jobId || (!job && !pendingWakes.has(key))) return result;
       // The model has now seen this job's terminal state itself: stop
-      // watching it, or the next watcher tick wakes it with the same result
-      // again and costs it a whole extra turn.
+      // watching it and drop a wake the watcher already held for it, or the
+      // same result arrives again and costs a whole extra turn.
       if (toolCallJobStatus(result, jobId).state === "terminal") {
-        if (watchedJobs.get(key) === job) watchedJobs.delete(key);
+        if (job && watchedJobs.get(key) === job) watchedJobs.delete(key);
+        pendingWakes.delete(key);
         stopWatcherWhenIdle();
         return result;
       }
-      return addWatchContext(result, job);
+      return job ? addWatchContext(result, job) : result;
     }
 
     return next(event);
@@ -545,7 +560,7 @@ function startWatcher($: EngineInterface): boolean {
 }
 
 function stopWatcherWhenIdle(): void {
-  if (watchedJobs.size > 0 || !watcher) return;
+  if (watchedJobs.size > 0 || pendingWakes.size > 0 || !watcher) return;
   try {
     watcher.cancel();
   } catch {
@@ -554,7 +569,18 @@ function stopWatcherWhenIdle(): void {
   watcher = undefined;
 }
 
+// Deliver the held wakes of jobs the model has not read itself, as one wake.
+function flushPendingWakes($: EngineInterface): void {
+  if (mainTurnActive || pendingWakes.size === 0) return;
+  const finished = [...pendingWakes.values()];
+  pendingWakes.clear();
+  stopWatcherWhenIdle();
+  submitWake($, formatWakeSummary(finished));
+}
+
 async function pollWatchedJobs($: EngineInterface): Promise<void> {
+  // The tick doubles as the fallback flush once no turn runs.
+  flushPendingWakes($);
   if (watcherTickInProgress || watchedJobs.size === 0) return;
   watcherTickInProgress = true;
   const snapshot = [...watchedJobs.entries()];
@@ -593,7 +619,11 @@ async function pollWatchedJobs($: EngineInterface): Promise<void> {
         continue;
       }
       watchedJobs.delete(check.key);
-      if (check.response) finished.push({ job: check.job, status: check.status, response: check.response });
+      if (!check.response) continue;
+      const done = { job: check.job, status: check.status, response: check.response };
+      // Mid-turn, hold the wake: the model may still read this job itself.
+      if (mainTurnActive) pendingWakes.set(check.key, done);
+      else finished.push(done);
     }
     stopWatcherWhenIdle();
     const text = [

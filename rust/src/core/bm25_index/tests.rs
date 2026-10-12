@@ -727,6 +727,52 @@ fn list_code_files_honors_bm25_max_files_config() {
     );
 }
 
+/// Regression: a semantic search scoped to a small directory of a project over
+/// the file budget failed with "source file budget exceeded" — the whole
+/// project was walked and counted before the scope was applied.
+#[test]
+fn scoped_listing_counts_only_in_scope_sources() {
+    let td = tempdir().expect("tempdir");
+    let root = td.path();
+    std::fs::create_dir_all(root.join("big")).expect("mkdir");
+    std::fs::create_dir_all(root.join("small/inner")).expect("mkdir");
+    for i in 0..6 {
+        std::fs::write(root.join(format!("big/f{i}.rs")), "pub fn f() {}\n").expect("write");
+    }
+    std::fs::write(root.join("small/a.rs"), "pub fn a() {}\n").expect("write");
+    std::fs::write(root.join("small/inner/b.py"), "def b(): pass\n").expect("write");
+
+    let cfg = crate::core::config::Config {
+        bm25_max_files: 3,
+        ..Default::default()
+    };
+    let rules = CorpusRules::from_config(&cfg);
+    let err = list_scoped_code_files(root, &rules, true, None, &|_| true)
+        .expect_err("unscoped walk is over budget and fails closed");
+    assert!(
+        err.contains("bm25_max_files"),
+        "error names the remedy: {err}"
+    );
+
+    let scoped = list_scoped_code_files(root, &rules, true, Some("small"), &|_| true)
+        .expect("a scoped walk stays within budget");
+    let scoped: Vec<String> = scoped.iter().map(|p| p.replace('\\', "/")).collect();
+    assert_eq!(
+        scoped,
+        ["small/a.rs", "small/inner/b.py"],
+        "paths stay project-relative"
+    );
+
+    let rust_only = list_scoped_code_files(root, &rules, true, None, &|p| {
+        p.starts_with("small")
+            && std::path::Path::new(p)
+                .extension()
+                .is_some_and(|e| e == "rs")
+    })
+    .expect("a filtered walk counts only matching files");
+    assert_eq!(rust_only.len(), 1);
+}
+
 #[test]
 fn max_bm25_cache_bytes_reads_env() {
     let _env = crate::core::data_dir::test_env_lock();

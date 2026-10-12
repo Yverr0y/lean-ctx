@@ -401,6 +401,13 @@ fn entropy_compress_with_task(
     )
 }
 
+#[path = "entropy_omission.rs"]
+mod omission;
+use omission::{
+    LineFate, coverage_terms, gap_delta, omission_runs, render_with_omissions,
+    rescue_uncovered_lines,
+};
+
 fn entropy_compress_inner(
     content: &str,
     entropy_threshold: f64,
@@ -410,7 +417,7 @@ fn entropy_compress_inner(
     force_keep: &[String],
 ) -> EntropyResult {
     let original_tokens = count_tokens(content);
-    let mut lines: Vec<&str> = content.lines().collect();
+    let lines: Vec<&str> = content.lines().collect();
     let mut techniques = Vec::new();
 
     let kw_lower: Vec<String> = task_keywords.iter().map(|k| k.to_lowercase()).collect();
@@ -427,64 +434,64 @@ fn entropy_compress_inner(
     // #1910: the threshold sets how much of *this* file is shed (most
     // predictable lines first), so it — and aggressiveness — take effect.
     let floor = super::surprise::surprise_floor(lines.iter().copied(), entropy_threshold);
-    lines.retain(|line| {
-        let trimmed = line.trim();
-        // Explicit protect tokens (#709) win over every lossy heuristic: a line
-        // containing one is force-kept verbatim before any threshold is applied.
-        if super::protect::line_is_protected(line, force_keep) {
-            return true;
-        }
-        if super::surprise::should_keep_line_semantic(trimmed, floor, &embed, &mut scoring_ctx) {
-            return true;
-        }
-        // Task-conditioned rescue: keep predictable lines that mention task keywords.
-        if !kw_lower.is_empty() {
-            let lower = trimmed.to_lowercase();
-            if kw_lower.iter().any(|kw| lower.contains(kw.as_str())) {
-                task_rescued += 1;
-                return true;
+    let mut fate: Vec<LineFate> = lines
+        .iter()
+        .map(|line| {
+            let trimmed = line.trim();
+            // Explicit protect tokens (#709) win over every lossy heuristic: a line
+            // containing one is force-kept verbatim before any threshold is applied.
+            if super::protect::line_is_protected(line, force_keep)
+                || super::surprise::should_keep_line_semantic(
+                    trimmed,
+                    floor,
+                    &embed,
+                    &mut scoring_ctx,
+                )
+            {
+                return LineFate::Keep;
+            }
+            // Task-conditioned rescue: keep predictable lines that mention task keywords.
+            if !kw_lower.is_empty() {
+                let lower = trimmed.to_lowercase();
+                if kw_lower.iter().any(|kw| lower.contains(kw.as_str())) {
+                    task_rescued += 1;
+                    return LineFate::Keep;
+                }
+            }
+            LineFate::Predictable
+        })
+        .collect();
+
+    // Near-duplicate blocks among the surviving lines (indices into `kept`).
+    let kept: Vec<usize> = (0..lines.len())
+        .filter(|&i| fate[i] == LineFate::Keep)
+        .collect();
+    let kept_lines: Vec<&str> = kept.iter().map(|&i| lines[i]).collect();
+    let blocks = extract_blocks(&kept_lines);
+    for group in find_pattern_groups(&blocks, jaccard_threshold) {
+        for &idx in group.iter().skip(1) {
+            // Protected lines (#709) are a hard keep: never dedup them away,
+            // not just exempt them from the entropy threshold above.
+            if !super::protect::line_is_protected(kept_lines[idx], force_keep) {
+                fate[kept[idx]] = LineFate::Duplicate;
             }
         }
-        false
-    });
-    let removed = original_count - lines.len();
-    if removed > 0 || task_rescued > 0 {
-        let mut msg = format!("⊘ {removed} predictable lines");
+    }
+
+    let covered = rescue_uncovered_lines(&lines, &mut fate);
+    let (result, omitted_predictable, omitted_duplicate) = render_with_omissions(&lines, &fate);
+    if omitted_predictable > 0 || task_rescued > 0 {
+        let mut msg = format!("⊘ {omitted_predictable} predictable lines");
         if task_rescued > 0 {
             msg.push_str(&format!(" [+{task_rescued} task-rescued]"));
         }
         techniques.push(msg);
     }
-
-    let blocks = extract_blocks(&lines);
-    let groups = find_pattern_groups(&blocks, jaccard_threshold);
-    let mut dedup_count = 0;
-    for group in &groups {
-        if group.len() > 1 {
-            dedup_count += group.len() - 1;
-        }
+    if omitted_duplicate > 0 {
+        techniques.push(format!("⊘ {omitted_duplicate} duplicate patterns (J≥0.7)"));
     }
-    if dedup_count > 0 {
-        techniques.push(format!("⊘ {dedup_count} duplicate patterns (J≥0.7)"));
-    }
-
-    let mut result: Vec<String> = Vec::new();
-    let mut skip_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    for group in &groups {
-        if group.len() > 1 {
-            for &idx in &group[1..] {
-                // Protected lines (#709) are a hard keep: never dedup them away,
-                // not just exempt them from the entropy threshold above.
-                if !super::protect::line_is_protected(lines[idx], force_keep) {
-                    skip_indices.insert(idx);
-                }
-            }
-        }
-    }
-    for (i, line) in lines.iter().enumerate() {
-        if !skip_indices.contains(&i) {
-            result.push(line.to_string());
-        }
+    if covered > 0 {
+        techniques.push(format!("+{covered} kept for unique identifiers"));
     }
 
     let mut collapsed = Vec::new();
@@ -605,6 +612,44 @@ fn delimiter_balance_force_keep(
 /// on line index. `target` is clamped to [0.05, 1.0]; the top-scored line is
 /// always kept so output is never empty for non-empty input.
 pub fn entropy_compress_to_density(content: &str, target: f64) -> EntropyResult {
+    entropy_compress_to_density_for(content, target, "")
+}
+
+/// Lines a density view of source code must keep for it to stay a map of the
+/// file: symbol definitions (signature start lines) and imports. Empty for
+/// unknown extensions, which keeps plain text purely budget-driven.
+fn structural_anchor_lines(content: &str, lines: &[&str], ext: &str) -> Vec<usize> {
+    if ext.is_empty() {
+        return Vec::new();
+    }
+    let mut anchors: Vec<usize> = super::signatures::extract_signatures(content, ext)
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                "fn" | "method" | "class" | "struct" | "interface" | "trait" | "enum"
+            )
+        })
+        .filter_map(|s| s.start_line)
+        .filter_map(|line| line.checked_sub(1))
+        .filter(|&i| i < lines.len())
+        .collect();
+    for import in super::deps::extract_deps(content, ext).imports {
+        if let Some(i) = lines.iter().position(|l| l.contains(import.as_str())) {
+            anchors.push(i);
+        }
+    }
+    anchors.sort_unstable();
+    anchors.dedup();
+    anchors
+}
+
+/// [`entropy_compress_to_density`] with structure for source files (`ext`):
+/// definition and import lines are kept first, then lines that carry an
+/// identifier or literal not yet in the view, then the highest-entropy rest.
+/// Dropped runs become `[lean-ctx: omitted N lines]` markers, so the result
+/// never passes for complete source.
+pub fn entropy_compress_to_density_for(content: &str, target: f64, ext: &str) -> EntropyResult {
     let target = target.clamp(0.05, 1.0);
     let original_tokens = count_tokens(content);
     if content.is_empty() || original_tokens == 0 {
@@ -613,6 +658,16 @@ pub fn entropy_compress_to_density(content: &str, target: f64) -> EntropyResult 
             original_tokens,
             compressed_tokens: 0,
             techniques: vec![format!("density target={target:.2} (empty input)")],
+        };
+    }
+    if target >= 1.0 {
+        // The whole budget: nothing to shed, so no line selection (whose
+        // per-line token sums and marker reserve could drop the last lines).
+        return EntropyResult {
+            output: content.to_string(),
+            original_tokens,
+            compressed_tokens: original_tokens,
+            techniques: vec![format!("density target={target:.2} (kept all)")],
         };
     }
 
@@ -640,21 +695,48 @@ pub fn entropy_compress_to_density(content: &str, target: f64) -> EntropyResult 
     let mut keep = vec![false; lines.len()];
     let mut used = 0usize;
     let mut kept_count = 0usize;
+    let tokens_of = |idx: usize| -> usize { scored.iter().find(|s| s.0 == idx).map_or(1, |s| s.2) };
     // The single most informative line is always kept, even if it alone
     // exceeds the budget — a density target that drops the highest-signal
-    // line would be self-defeating. Everything else fills greedily.
-    if let Some(&(idx, _, toks)) = scored.first() {
-        keep[idx] = true;
-        used += toks;
-        kept_count += 1;
-    }
-    for &(idx, _h, toks) in scored.iter().skip(1) {
-        if used + toks > budget {
-            continue;
+    // line would be self-defeating. Structural anchors (definitions, imports)
+    // are kept even past the budget: without them the view stops being a map
+    // of the file, and the quality guard would discard it anyway.
+    let anchors = structural_anchor_lines(content, &lines, ext);
+    for idx in scored.first().map(|s| s.0).into_iter().chain(anchors) {
+        if !keep[idx] {
+            keep[idx] = true;
+            used += tokens_of(idx);
+            kept_count += 1;
         }
-        keep[idx] = true;
-        used += toks;
-        kept_count += 1;
+    }
+    // Then lines that bring an identifier or literal the view lacks, best
+    // entropy first; then the highest-entropy rest. Both stop at the budget,
+    // which also pays for the omission markers: keeping a line inside a
+    // dropped run splits it (one more marker), closing a one-line gap saves one.
+    let marker_cost = count_tokens("[lean-ctx: omitted 10 lines]");
+    let mut gaps = omission_runs(&keep);
+    let mut vocab: std::collections::HashSet<&str> = (0..lines.len())
+        .filter(|&i| keep[i])
+        .flat_map(|i| coverage_terms(lines[i]))
+        .collect();
+    for coverage_pass in [true, false] {
+        for &(idx, _h, toks) in &scored {
+            if keep[idx] {
+                continue;
+            }
+            let new_gaps = gaps.saturating_add_signed(gap_delta(&keep, idx));
+            if used + toks + new_gaps * marker_cost > budget {
+                continue;
+            }
+            if coverage_pass && coverage_terms(lines[idx]).all(|t| vocab.contains(t)) {
+                continue;
+            }
+            keep[idx] = true;
+            used += toks;
+            gaps = new_gaps;
+            kept_count += 1;
+            vocab.extend(coverage_terms(lines[idx]));
+        }
     }
 
     // #798 Delimiter Balance Guard: when a kept line opens unclosed
@@ -663,22 +745,27 @@ pub fn entropy_compress_to_density(content: &str, target: f64) -> EntropyResult 
     // its arguments are dropped, leaving syntactically broken output.
     delimiter_balance_force_keep(&lines, &scored, &mut keep, &mut used, &mut kept_count);
 
-    let mut out_lines: Vec<&str> = Vec::with_capacity(kept_count);
-    for (i, line) in lines.iter().enumerate() {
-        if keep[i] {
-            out_lines.push(line);
-        }
-    }
+    let fate: Vec<LineFate> = keep
+        .iter()
+        .map(|&k| {
+            if k {
+                LineFate::Keep
+            } else {
+                LineFate::Predictable
+            }
+        })
+        .collect();
+    let (out_lines, omitted, _) = render_with_omissions(&lines, &fate);
     let output = out_lines.join("\n");
     let compressed_tokens = count_tokens(&output);
 
-    let dropped = lines.len() - kept_count;
     EntropyResult {
         output,
         original_tokens,
         compressed_tokens,
         techniques: vec![format!(
-            "density target={target:.2} budget={budget} tok, kept {kept_count}/{} lines (⊘ {dropped})",
+            "density target={target:.2} budget={budget} tok, kept {}/{} lines (⊘ {omitted})",
+            lines.len() - omitted,
             lines.len()
         )],
     }
@@ -1075,6 +1162,126 @@ mod tests {
         let b = entropy_compress_to_density(&content, 0.4);
         assert_eq!(a.output, b.output);
         assert_eq!(a.compressed_tokens, b.compressed_tokens);
+    }
+
+    /// A table of look-alike rows (`rewrite_registry.rs`): every row is
+    /// "predictable", but each literal exists exactly once.
+    fn registry_fixture() -> String {
+        let mut rows = vec!["pub const REWRITE_COMMANDS: &[RewriteEntry] = &[".to_string()];
+        for cmd in [
+            "git",
+            "gh",
+            "cargo",
+            "npm",
+            "pnpm",
+            "yarn",
+            "bun",
+            "deno",
+            "vite",
+            "tsc",
+            "python",
+            "pip",
+            "pip3",
+            "uv",
+            "pytest",
+            "mypy",
+            "ruff",
+            "go",
+            "docker",
+            "kubectl",
+            "helm",
+            "aws",
+            "terraform",
+            "tofu",
+            "eslint",
+            "prettier",
+            "biome",
+            "curl",
+            "wget",
+            "php",
+        ] {
+            rows.push(format!("    re(\"{cmd}\", Category::Build),"));
+        }
+        rows.push("];".to_string());
+        rows.push(String::new());
+        rows.push("pub enum Category {".to_string());
+        for v in ["Vcs", "Build", "PackageManager", "Lint", "Infra", "Http"] {
+            rows.push(format!("    {v},"));
+        }
+        rows.push("}".to_string());
+        rows.join("\n")
+    }
+
+    /// Regression: `entropy` dropped `re("git", Category::Vcs)` and every
+    /// `Category` variant without a trace, so the model saw a complete-looking
+    /// table that silently lacked `git`.
+    #[test]
+    fn entropy_never_loses_a_literal_and_marks_every_gap() {
+        let content = registry_fixture();
+        for threshold in [0.8, 1.2, 1.9] {
+            let r = entropy_compress_with_thresholds(&content, threshold, 0.7, &[]);
+            for cmd in ["\"git\"", "\"gh\"", "\"php\"", "\"pip3\""] {
+                assert!(r.output.contains(cmd), "t={threshold}: lost {cmd}");
+            }
+            let kept_lines = r
+                .output
+                .lines()
+                .filter(|l| !l.contains("[lean-ctx: omitted"));
+            let kept_source_lines = kept_lines.clone().count();
+            let marked: usize = r
+                .output
+                .lines()
+                .filter_map(|l| l.split("[lean-ctx: omitted ").nth(1))
+                .filter_map(|rest| rest.split(' ').next()?.parse::<usize>().ok())
+                .sum();
+            assert_eq!(
+                kept_source_lines + marked,
+                content.lines().count(),
+                "t={threshold}: every source line is either shown or counted in a marker"
+            );
+            for line in kept_lines {
+                assert!(content.lines().any(|l| l == line), "invented line {line:?}");
+            }
+        }
+    }
+
+    /// Density views keep the file's definitions, carry the omission markers
+    /// inside the budget, and never invent content.
+    #[test]
+    fn density_keeps_definitions_and_budgets_its_markers() {
+        use std::fmt::Write as _;
+        let mut content = String::new();
+        for i in 0..40 {
+            writeln!(content, "pub fn handler_{i}(input: &str) -> usize {{").unwrap();
+            writeln!(content, "    let parsed_{i} = input.len() + {i};").unwrap();
+            for k in 0..6 {
+                writeln!(
+                    content,
+                    "    let step_{i}_{k} = parsed_{i}.wrapping_mul({k} + {i});"
+                )
+                .unwrap();
+            }
+            writeln!(content, "    parsed_{i} * 2\n}}").unwrap();
+        }
+        let orig = count_tokens(&content);
+        for target in [0.3, 0.5] {
+            let r = entropy_compress_to_density_for(&content, target, "rs");
+            for i in 0..40 {
+                assert!(
+                    r.output.contains(&format!("pub fn handler_{i}(")),
+                    "t={target}: definition handler_{i} dropped"
+                );
+            }
+            assert!(
+                r.output.contains("[lean-ctx: omitted "),
+                "t={target}: gaps must be marked"
+            );
+            let actual = r.compressed_tokens as f64 / orig as f64;
+            assert!(
+                actual <= target + 0.1,
+                "t={target}: {actual:.2} — the omission markers must fit the budget"
+            );
+        }
     }
 
     #[test]

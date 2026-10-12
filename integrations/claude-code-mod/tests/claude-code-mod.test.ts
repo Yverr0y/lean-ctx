@@ -428,6 +428,63 @@ for (const action of ["status", "cancel"] as const) {
   });
 }
 
+// User report (2026-10-12): during a long turn the watcher saw jobs finish and
+// submitted the wake at once; the host held it until the turn ended, by which
+// time the model had read each job itself — three stale wakes, one extra turn.
+test("a job finished mid-turn wakes only if the model has not read it by turn end", async ($, on) => {
+  const clock = mock.clock(on);
+  const wakes: string[] = [];
+  const done = (jobId: string) => ({ jobId, state: "completed", exitCode: 0 });
+  on("command.register", ($, event) => ({ value: { command: event.name } }));
+  on("tool.call", ($, event) => {
+    const fields = event as unknown as Record<string, unknown>;
+    if (fields.background_action) {
+      const status = done(String(fields.job_id));
+      return {
+        result: { content: [{ type: "text", text: JSON.stringify(status) }], structuredContent: status, isError: false },
+        text: JSON.stringify(status),
+      };
+    }
+    const id = String(fields.command);
+    return toolResult(`{"jobId":"${id}","state":"running","summary":"background job started"}`);
+  });
+  on("mcp.call", ($, event) => {
+    const args = event.args as Record<string, unknown>;
+    const status = done(String(args.job_id));
+    return { value: { content: [{ type: "text", text: "" }], structuredContent: status, isError: false } };
+  });
+  on("prompt.submit", ($, event) => {
+    wakes.push(event.text);
+    return { text: event.text };
+  });
+  on("turn.start", ($, event) => ({ turnId: event.turnId }));
+  on("turn.complete", ($, event) => ({ text: event.answer }));
+
+  await $.turn.start({ text: "build it", turnId: "turn-1" });
+  await $.tool.call({ tool: SHELL, command: "shell_read", run_in_background: true });
+  await $.tool.call({ tool: SHELL, command: "shell_unread", run_in_background: true });
+  await clock.advance(2_000);
+  await flushMicrotasks();
+  expect(wakes).toEqual([]);
+
+  await $.tool.call({ tool: SHELL, background_action: "status", job_id: "shell_read" });
+  await $.turn.complete({
+    answer: "done",
+    durationMs: 1,
+    isAborted: false,
+    turnId: "turn-1",
+    reason: "answer",
+  });
+  await flushMicrotasks();
+  expect(wakes).toEqual([]);
+  await clock.advance(2_000);
+  await flushMicrotasks();
+
+  expect(wakes.length).toBe(1);
+  expect(wakes[0]).toContain("Job shell_unread finished");
+  expect(wakes[0]).not.toContain("shell_read finished");
+});
+
 test("a running status answer keeps the watch: the finish still wakes once", async ($, on) => {
   const clock = mock.clock(on);
   const wakes: string[] = [];
