@@ -349,7 +349,9 @@ fn reaches(walk: ignore::Walk, target: &Path) -> bool {
 
 /// Mirrors [`crate::core::walk_filter::keep_entry`], naming the rule.
 fn prune_kind(entry: &ignore::DirEntry) -> Option<&'static str> {
-    if crate::core::walk_filter::is_vendor_dir(entry) {
+    if crate::core::walk_filter::is_vcs_metadata(entry) {
+        Some("version-control metadata, never indexed")
+    } else if crate::core::walk_filter::is_vendor_dir(entry) {
         Some("dependency/vendor directory, never indexed")
     } else if crate::core::walk_filter::is_agent_worktree_dir(entry) {
         Some("agent worktree copy, never indexed")
