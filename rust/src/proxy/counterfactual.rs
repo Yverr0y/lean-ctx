@@ -23,7 +23,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use axum::http::request::Parts;
+// The `http` crate's type (what axum re-exports), so the slot builds without
+// the `http-server` feature (#586).
+use http::request::Parts;
 use serde_json::Value;
 
 /// Probe timeout: `count_tokens` typically answers in well under a second; a

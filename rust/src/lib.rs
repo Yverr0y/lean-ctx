@@ -46,7 +46,9 @@ pub mod token_report;
 pub mod tool_defs;
 pub mod tools;
 
-#[cfg(feature = "http-server")]
+// Always compiled: the shared accounting the rest of the engine reads (CCR
+// archive, usage meters, savings, introspection). The HTTP proxy server and its
+// provider adapters inside are gated on `http-server` (#586).
 #[allow(dead_code)]
 pub mod proxy;
 pub mod proxy_autostart;
