@@ -800,6 +800,9 @@ mod tests {
     /// walk order and filled every slot; the definition in code never showed.
     #[test]
     fn exact_matches_rank_definition_and_code_above_prose() {
+        // The source view re-verifies policy and role after the search; a
+        // parallel test switching either (Windows CI) would void it.
+        let _env = crate::core::data_dir::test_env_lock();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("AGENTS.md"), "use widget_factory\n".repeat(30)).unwrap();

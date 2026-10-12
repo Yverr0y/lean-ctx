@@ -201,6 +201,83 @@ test("/leanctx exists right after session start when lean-ctx is connected", asy
   expect(answer.text).toContain("Requests 0");
 });
 
+// #2057: the cockpit sidebar can be turned off and on, and the choice holds
+// for new sessions through the mod's `cockpit_panel` option.
+function cockpitEngine(on: Parameters<Parameters<typeof test>[1]>[1]) {
+  const opened: string[] = [];
+  const closed: string[] = [];
+  const written: { key: string; value: unknown }[] = [];
+  mock.clock(on);
+  on("session.start", () => ({ cwd: "/work" }));
+  on("command.register", ($, event) => ({ value: { command: event.name } }));
+  on("ui.status", () => ({ value: undefined }));
+  on("ui.open", ($, event) => {
+    opened.push(event.id);
+    return { value: { isPlaced: true as const } };
+  });
+  on("ui.close", ($, event) => {
+    closed.push(event.id);
+    return { value: undefined };
+  });
+  on("config.list", () => ({
+    value: [
+      {
+        key: "lean-ctx.cockpit_panel",
+        label: "Open the LeanCTX cockpit sidebar",
+        kind: "toggle",
+        value: true,
+        provider: { kind: "plugin", name: "lean-ctx" },
+        isLocked: false,
+      },
+    ],
+  }));
+  on("config.set", ($, event) => {
+    written.push({ key: event.key, value: event.value });
+    return { value: event.value };
+  });
+  return { opened, closed, written };
+}
+
+const runCockpit = ($: Parameters<Parameters<typeof test>[1]>[0], args: string) =>
+  $.command.run({
+    command: "cockpit",
+    args,
+    origin: { kind: "composer" },
+    presentation: { isFullscreen: true, columns: 160 },
+  });
+
+test("/cockpit off closes the sidebar and keeps it closed; /cockpit on brings it back", async ($, on) => {
+  const engine = cockpitEngine(on);
+  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" });
+  expect(engine.opened).toEqual(["leanctx-cockpit"]);
+
+  const off = await runCockpit($, "off");
+  expect(engine.closed).toEqual(["leanctx-cockpit"]);
+  expect(engine.written).toEqual([{ key: "lean-ctx.cockpit_panel", value: false }]);
+  expect(off.text).toContain("off");
+  expect(off.text).toContain("/cockpit on");
+
+  const on_ = await runCockpit($, "ON ");
+  expect(engine.written.at(-1)).toEqual({ key: "lean-ctx.cockpit_panel", value: true });
+  expect(engine.opened).toEqual(["leanctx-cockpit", "leanctx-cockpit"]);
+  expect(on_.text).toContain("opens in new sessions again");
+
+  const usage = await runCockpit($, "toggle");
+  expect(usage.text).toContain("Usage: /cockpit");
+  expect(engine.written.length).toBe(2);
+});
+
+test("with cockpit_panel off a session starts without the sidebar; /cockpit still opens it once", { options: { cockpit_panel: false } }, async ($, on) => {
+  const engine = cockpitEngine(on);
+  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" });
+  expect(engine.opened).toEqual([]);
+
+  const once = await runCockpit($, "");
+  expect(engine.opened).toEqual(["leanctx-cockpit"]);
+  expect(once.text).toBe("LeanCTX cockpit opened.");
+  expect(engine.written).toEqual([]);
+});
+
 test("the lean-ctx skill is prefixed with this session's live facts", async ($, on) => {
   on("skill.prompt", () => ({ text: "STATIC SKILL BODY" }));
   const out = await $.skill.prompt({ skill: "lean-ctx", text: "STATIC SKILL BODY" });

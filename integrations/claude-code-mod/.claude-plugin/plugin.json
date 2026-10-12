@@ -28,6 +28,12 @@
       "description": "Compress large native Bash stdout through lean-ctx (recoverable); off keeps it byte-for-byte.",
       "default": true
     },
+    "cockpit_panel": {
+      "type": "boolean",
+      "title": "Open the LeanCTX cockpit sidebar",
+      "description": "Open the cockpit sidebar when a session starts. /cockpit off and /cockpit on change it; /cockpit opens it once either way.",
+      "default": true
+    },
     "keep_hook_context": {
       "type": "boolean",
       "title": "Keep lean-ctx hook context",
