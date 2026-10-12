@@ -532,6 +532,41 @@ fn comma_separated_include_is_a_glob_list() {
 /// #1994: an include that admits no file and a genuine miss printed
 /// byte-identical lines. Both now state the scanned count, and the empty
 /// scope says why nothing was searched — with and without a warm index.
+/// #2059: a file `path` plus `include` scanned 0 files — the glob was matched
+/// against the empty path relative to the file itself.
+#[test]
+fn include_and_exclude_apply_to_a_file_root_by_its_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("main.rs");
+    std::fs::write(&file, "fn main() { let needle2059 = 1; }\n").unwrap();
+    let file = file.to_string_lossy().to_string();
+    let search = |include: Option<&str>, exclude: Option<&str>| {
+        handle_filtered(
+            "needle2059",
+            &file,
+            include,
+            10,
+            CrpMode::Off,
+            true,
+            false,
+            false,
+            exclude,
+            None,
+        )
+        .text
+    };
+
+    assert!(search(None, None).contains("let needle2059"));
+    for include in ["*.rs", "main.rs", "**/*.rs"] {
+        let hit = search(Some(include), None);
+        assert!(hit.contains("needle2059"), "include={include}: {hit}");
+    }
+    let filtered = search(Some("*.go"), None);
+    assert!(filtered.contains("(scanned 0 files)"), "{filtered}");
+    let excluded = search(None, Some("*.rs"));
+    assert!(!excluded.contains("let needle2059"), "{excluded}");
+}
+
 #[test]
 fn zero_hits_state_the_scope_and_name_an_empty_filter() {
     let _lock = crate::core::data_dir::test_env_lock();

@@ -86,28 +86,28 @@ pub(crate) fn write_mcp_json(
     write_mcp_json_fresh(&target.config_path, &desired, None)
 }
 
-pub(crate) fn find_in_path(binary: &str) -> Option<std::path::PathBuf> {
-    let path_var = std::env::var("PATH").ok()?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(binary);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+/// The first of `names` along PATH: directory order wins over name order, so
+/// the binary a shell would run is the one chosen.
+fn find_first_in_path(names: &[&str]) -> Option<std::path::PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|candidate| candidate.is_file())
 }
 
 /// The trusted `claude` executable, resolved to its real file on every platform
-/// (Windows: `claude.exe`; an npm `claude.cmd` shim cannot be spawned directly
-/// and is not trusted). `LEAN_CTX_TRUST_CLAUDE_PATH=1` overrides the location
-/// check for unusual installs — only the exact value `1`.
+/// (Windows: `claude.exe` from the native installer, or the `claude.cmd` shim of
+/// an npm install, #2061 — std escapes batch-file arguments since Rust 1.77, and
+/// the shim must still sit under a trusted root). `LEAN_CTX_TRUST_CLAUDE_PATH=1`
+/// overrides the location check for unusual installs — only the exact value `1`.
 pub(crate) fn validate_claude_binary() -> Result<std::path::PathBuf, String> {
-    let name = if cfg!(windows) {
-        "claude.exe"
+    let names: &[&str] = if cfg!(windows) {
+        &["claude.exe", "claude.cmd"]
     } else {
-        "claude"
+        &["claude"]
     };
-    let path = find_in_path(name).ok_or_else(|| format!("{name} not found in PATH"))?;
+    let path = find_first_in_path(names)
+        .ok_or_else(|| format!("{} not found in PATH", names.join(" or ")))?;
 
     let canonical =
         std::fs::canonicalize(&path).map_err(|e| format!("cannot resolve claude path: {e}"))?;
@@ -135,6 +135,9 @@ pub(crate) fn validate_claude_binary() -> Result<std::path::PathBuf, String> {
 fn is_trusted_claude_path(canonical: &std::path::Path, home: Option<&std::path::Path>) -> bool {
     const HOME_ROOTS: &[&str] = &[
         ".claude",
+        // The Windows native installer puts a real `claude.exe` here; on Unix
+        // it is the symlink that canonicalizes into `.local/share/claude`.
+        ".local/bin",
         ".local/share/claude",
         ".npm",
         ".npm-global",
@@ -148,7 +151,12 @@ fn is_trusted_claude_path(canonical: &std::path::Path, home: Option<&std::path::
         "/opt/homebrew",
         "/nix/store",
     ];
-    home.is_some_and(|h| HOME_ROOTS.iter().any(|r| canonical.starts_with(h.join(r))))
+    // Joined per component: in a canonical Windows path (`\\?\C:\…`) `/` is
+    // no separator, so `h.join(".local/share/claude")` never matched (#2061).
+    let under = |h: &std::path::Path, root: &str| {
+        canonical.starts_with(root.split('/').fold(h.to_path_buf(), |p, c| p.join(c)))
+    };
+    home.is_some_and(|h| HOME_ROOTS.iter().any(|r| under(h, r)))
         || SYSTEM_ROOTS.iter().any(|r| canonical.starts_with(r))
 }
 
@@ -239,5 +247,48 @@ mod trust_tests {
         assert!(!trusted("/Users/u/repo/node_modules/.bin/claude"));
         assert!(!trusted("/Users/other/.claude/local/claude"));
         assert!(!trusted("/tmp/evil/claude"));
+        assert!(trusted("/Users/u/.local/bin/claude"));
+        assert!(!trusted("/Users/u/.local/claude"));
+    }
+
+    /// #2061: canonical Windows paths are verbatim (`\\?\`), where `/` does
+    /// not separate components — multi-segment roots must still match.
+    #[cfg(windows)]
+    #[test]
+    fn trust_matches_verbatim_windows_paths() {
+        let home = Path::new(r"\\?\C:\Users\u");
+        let trusted = |p: &str| super::is_trusted_claude_path(Path::new(p), Some(home));
+        assert!(trusted(r"\\?\C:\Users\u\.local\bin\claude.exe"));
+        assert!(trusted(
+            r"\\?\C:\Users\u\.local\share\claude\versions\2.1.287\claude.exe"
+        ));
+        assert!(trusted(r"\\?\C:\Users\u\AppData\Roaming\npm\claude.cmd"));
+        assert!(!trusted(
+            r"\\?\C:\Users\u\repo\node_modules\.bin\claude.cmd"
+        ));
+        assert!(!trusted(r"\\?\C:\tmp\.local\bin\claude.exe"));
+    }
+
+    /// PATH order decides, not name order: an earlier `claude.cmd` beats a
+    /// later `claude.exe`, exactly as the shell would resolve `claude`.
+    #[test]
+    fn first_in_path_follows_directory_order() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        std::fs::write(first.path().join("tool.cmd"), "").unwrap();
+        std::fs::write(second.path().join("tool.exe"), "").unwrap();
+        let saved = std::env::var_os("PATH");
+        let joined = std::env::join_paths([first.path(), second.path()]).unwrap();
+        crate::test_env::set_var("PATH", &joined);
+        let found = super::find_first_in_path(&["tool.exe", "tool.cmd"]);
+        match saved {
+            Some(v) => crate::test_env::set_var("PATH", v),
+            None => crate::test_env::remove_var("PATH"),
+        }
+        assert_eq!(
+            found.as_deref(),
+            Some(first.path().join("tool.cmd").as_path())
+        );
     }
 }

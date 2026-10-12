@@ -56,6 +56,7 @@
 
 use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long a resolved conversation id stays fresh before we re-read the file.
@@ -335,6 +336,18 @@ pub(crate) fn scope_cannot_identify_caller() -> bool {
     subagent_scope().is_some_and(|scope| scope.starts_with("proc:"))
 }
 
+/// Set once by a one-shot CLI process (`lean-ctx call`, #2060).
+static ONE_SHOT_PROCESS: AtomicBool = AtomicBool::new(false);
+
+/// Marks this process as one-shot: its output goes to a caller whose context
+/// holds nothing this process delivered, so no stub or cross-agent reference
+/// can be in context (#2060). Such a process still resolves the shared
+/// `active_transcript.json` conversation id, which made earlier deliveries
+/// look like its own.
+pub(crate) fn mark_one_shot_process() {
+    ONE_SHOT_PROCESS.store(true, Ordering::Relaxed);
+}
+
 /// Whether a `[unchanged]` stub may be served for an entry that was delivered to
 /// `delivered`, given the `current` conversation.
 ///
@@ -342,13 +355,16 @@ pub(crate) fn scope_cannot_identify_caller() -> bool {
 /// process-scoped behavior — stub allowed — **unless** the caller cannot be
 /// identified: more than one conversation has been active recently (#1040), or
 /// the scope is only process-derived (#1801). Then every stub is withheld.
+///
+/// A one-shot process never serves a stub (#2060), in legacy mode included.
 pub(crate) fn conversation_allows_stub(current: Option<&str>, delivered: Option<&str>) -> bool {
-    allows_stub(
-        scope_enabled(),
-        multiple_conversations_recent() || scope_cannot_identify_caller(),
-        current,
-        delivered,
-    )
+    !ONE_SHOT_PROCESS.load(Ordering::Relaxed)
+        && allows_stub(
+            scope_enabled(),
+            multiple_conversations_recent() || scope_cannot_identify_caller(),
+            current,
+            delivered,
+        )
 }
 
 /// Pure decision core (no env / global reads) so the full matrix is unit-testable.

@@ -322,8 +322,7 @@ fn search_compiled_pattern(
             }
 
             if !include_patterns.is_empty() {
-                let rel = path.strip_prefix(root).unwrap_or(path);
-                let rel_str = rel.to_string_lossy();
+                let rel_str = filter_rel(path, root);
                 if !include_patterns.iter().any(|p| p.matches(&rel_str)) {
                     continue;
                 }
@@ -331,8 +330,7 @@ fn search_compiled_pattern(
 
             if !allow_secret_paths {
                 if let Some(reason) = crate::core::io_boundary::is_secret_like(path) {
-                    let rel = path.strip_prefix(root).unwrap_or(path);
-                    skipped_boundary_files.push((rel.to_string_lossy().into_owned(), reason));
+                    skipped_boundary_files.push((filter_rel(path, root).into_owned(), reason));
                     continue;
                 }
             }
@@ -349,8 +347,7 @@ fn search_compiled_pattern(
     // so the negative glob filter applies uniformly to either collection path.
     if !exclude_patterns.is_empty() {
         files.retain(|path| {
-            let rel = path.strip_prefix(root).unwrap_or(path);
-            let rel_str = rel.to_string_lossy();
+            let rel_str = filter_rel(path, root);
             !exclude_patterns.iter().any(|p| p.matches(&rel_str))
         });
     }
@@ -901,6 +898,18 @@ fn split_top_level_commas(raw: &str) -> Vec<&str> {
     }
     pieces.push(raw[start..].trim());
     pieces
+}
+
+/// The path include/exclude globs are matched against: relative to the search
+/// root, or the file name when the root is the file itself (#2059) — there
+/// `strip_prefix` yields the empty string, which no glob admits.
+fn filter_rel<'a>(path: &'a Path, root: &Path) -> std::borrow::Cow<'a, str> {
+    match path.strip_prefix(root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => rel.to_string_lossy(),
+        _ => path
+            .file_name()
+            .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy()),
+    }
 }
 
 /// Why a search had nothing to scan (#1994), appended to a zero-hit result so
