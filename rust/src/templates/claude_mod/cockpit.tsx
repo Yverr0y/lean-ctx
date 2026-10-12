@@ -825,18 +825,81 @@ function startFrames($: EngineInterface) {
   })
 }
 
-// Opens the sidebar and starts the refresh and proof clocks.
+// Whether the sidebar opens with a session: the `cockpit_panel` option, then
+// `/cockpit on|off` (#2057). The pulse line, spinner and turn rows stay either way.
+let panelEnabled = true
+// The proof clock re-verifies receipts only the sidebar shows (~8 s of work).
+let proofClock: { cancel: () => void } | undefined
+
+function startProofClock($: EngineInterface) {
+  if (proofClock) return
+  $.clock.after(PROVE_FIRST_MS, () => void prove($).catch(() => {}))
+  proofClock = $.clock.every(PROVE_MS, () => void prove($).catch(() => {}))
+}
+
+function stopProofClock() {
+  proofClock?.cancel()
+  proofClock = undefined
+}
+
+// Registers /cockpit, opens the sidebar unless it is turned off, and starts
+// the refresh clock (and, with the sidebar, the proof clock).
 async function cockpitStart($: EngineInterface): Promise<void> {
-  await $.command.register({ name: 'cockpit', description: 'Open the LeanCTX cockpit' })
+  await $.command.register({
+    name: 'cockpit',
+    description: 'Open the LeanCTX cockpit; on/off keeps the sidebar open or closed in new sessions',
+    argumentHint: '[on|off]',
+    immediate: true,
+  })
   $.ui.status(undefined)
-  // Fire-and-forget, and never an unhandled rejection: a surface that draws
-  // no panes (or none yet) simply leaves the sidebar closed.
-  $.ui.open({ id: PANE, title: 'LeanCTX', columns: DOCK_COLUMNS }).catch(() => {})
   // Work that outlives this hook runs from timers, never off the hook itself.
   $.clock.after(300, () => void refresh($).catch(() => {}))
   $.clock.every(REFRESH_MS, () => void refresh($).catch(() => {}))
-  $.clock.after(PROVE_FIRST_MS, () => void prove($).catch(() => {}))
-  $.clock.every(PROVE_MS, () => void prove($).catch(() => {}))
+  if (!panelEnabled) return
+  // Fire-and-forget, and never an unhandled rejection: a surface that draws
+  // no panes (or none yet) simply leaves the sidebar closed.
+  $.ui.open({ id: PANE, title: 'LeanCTX', columns: DOCK_COLUMNS }).catch(() => {})
+  startProofClock($)
+}
+
+// Stores the sidebar choice in the mod's `cockpit_panel` option so new
+// sessions keep it; `false` when the setting could not be written.
+async function persistPanelChoice($: EngineInterface, on: boolean): Promise<boolean> {
+  try {
+    const row = (await $.config.list()).find(r => r.key.endsWith('.cockpit_panel'))
+    if (!row) return false
+    const { deny } = await $.config.set({ key: row.key, value: on })
+    return deny === undefined
+  } catch {
+    return false
+  }
+}
+
+// `/cockpit [on|off]`: no argument opens the sidebar now; on/off also decides
+// whether it opens in new sessions.
+async function runCockpitCommand($: EngineInterface, args: string): Promise<string> {
+  const choice = args.trim().toLowerCase()
+  if (choice === 'off') {
+    panelEnabled = false
+    stopProofClock()
+    await $.ui.close({ id: PANE }).catch(() => {})
+    const kept = await persistPanelChoice($, false)
+    return kept
+      ? 'LeanCTX cockpit sidebar off: closed now and in new sessions. /cockpit on brings it back.'
+      : 'LeanCTX cockpit sidebar closed for this session (the setting could not be saved; /config → lean-ctx).'
+  }
+  if (choice !== '' && choice !== 'on') {
+    return 'Usage: /cockpit opens the sidebar · /cockpit on keeps it open in new sessions · /cockpit off closes it and keeps it closed.'
+  }
+  const kept = choice === 'on' ? await persistPanelChoice($, true) : true
+  if (choice === 'on') panelEnabled = true
+  const { isPlaced } = await $.ui.open({ id: PANE, title: 'LeanCTX', columns: DOCK_COLUMNS })
+  $.clock.after(0, () => void refresh($).catch(() => {}))
+  $.clock.after(0, () => void prove($).catch(() => {}))
+  if (panelEnabled) startProofClock($)
+  const opened = isPlaced ? 'LeanCTX cockpit opened.' : 'LeanCTX cockpit is waiting for room (fullscreen, ~110+ columns).'
+  if (choice !== 'on') return opened
+  return kept ? `${opened} It opens in new sessions again.` : `${opened} (The setting could not be saved; /config → lean-ctx.)`
 }
 
 // ── drawing helpers ────────────────────────────────────────────────────────
@@ -924,7 +987,8 @@ export type TurnObserver = {
   onMainTurnComplete?: () => void
 }
 
-export function registerCockpit(on: On, turns: TurnObserver = {}): void {
+export function registerCockpit(on: On, turns: TurnObserver = {}, options: { panel?: boolean } = {}): void {
+  panelEnabled = options.panel !== false
   // A matcher, because the mod's own `session.start` hook has none (one per
   // event and plugin); headless runs (`claude -p`) get no cockpit at all.
   on('session.start', { isInteractive: true }, async ($, e, next) => {
@@ -936,12 +1000,7 @@ export function registerCockpit(on: On, turns: TurnObserver = {}): void {
     return next(e)
   })
 
-  on('command.run', { command: 'cockpit' }, async $ => {
-    const { isPlaced } = await $.ui.open({ id: PANE, title: 'LeanCTX', columns: DOCK_COLUMNS })
-    $.clock.after(0, () => void refresh($).catch(() => {}))
-    $.clock.after(0, () => void prove($).catch(() => {}))
-    return { text: isPlaced ? 'LeanCTX cockpit opened.' : 'LeanCTX cockpit is waiting for room (fullscreen, ~110+ columns).' }
-  })
+  on('command.run', { command: 'cockpit' }, async ($, e) => ({ text: await runCockpitCommand($, e.args) }))
 
   on('turn.start', async ($, e, next) => {
     turns.onTurnStart?.()

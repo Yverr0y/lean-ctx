@@ -43,8 +43,12 @@ were waiting** — 7,551 status polls for 1,030 background jobs plus 1,770
   short card when a turn ends and when a milestone is crossed. The numbers are
   those of the lean-ctx session serving this conversation (matched by process
   tree), the same ones `lean-ctx statusline` shows below the prompt; the band
-  above the prompt repeats none of them. `/cockpit` reopens the sidebar.
-  LeanCTX colours from leanctx.com.
+  above the prompt repeats none of them. `/cockpit` reopens the sidebar;
+  `/cockpit off` closes it and keeps it closed in new sessions (the proof
+  re-verification stops with it), `/cockpit on` brings it back. The choice is
+  the mod's **Open the LeanCTX cockpit sidebar** option in `/config`. The
+  pulse line, spinner and turn cards stay either way. LeanCTX colours from
+  leanctx.com.
 
 - **Wake, don't poll.** Watches `ctx_shell(run_in_background=true)` jobs in
   Claude Code's process (state from ctx_shell's `structuredContent`, then its

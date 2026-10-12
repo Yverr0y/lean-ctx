@@ -177,14 +177,18 @@ export const register: Register = (on, options) => {
   // The cockpit: sidebar, pulse line, turn and milestone overlays (cockpit.tsx).
   // Held wakes go out on the next watcher tick after the turn (≤ 2 s); the
   // watcher keeps running while any are held.
-  registerCockpit(on, {
-    onTurnStart: () => {
-      mainTurnActive = true;
+  registerCockpit(
+    on,
+    {
+      onTurnStart: () => {
+        mainTurnActive = true;
+      },
+      onMainTurnComplete: () => {
+        mainTurnActive = false;
+      },
     },
-    onMainTurnComplete: () => {
-      mainTurnActive = false;
-    },
-  });
+    { panel: asRecord(options).cockpit_panel !== false },
+  );
   const frontLoaded = getFrontLoadedTools(options);
   const shapeNative = asRecord(options).shape_native_output !== false;
   const keepHookContext = asRecord(options).keep_hook_context === true;

@@ -177,10 +177,13 @@ pub(crate) const CTX_READ_TOOLS: [&str; 2] = ["mcp__lean-ctx__ctx_read", "mcp__l
 /// so the stub returns here, keyed per reading context.
 ///
 /// The criterion is stricter than the native Read's file hash: a stub replaces
-/// a result only when the **identical bytes** were already delivered to this
-/// context for the identical arguments. A re-read whose rendering differs
-/// (file changed, `auto` resolving another mode, a new footer) passes through.
-/// `fresh=true` / `raw=true` always pass through.
+/// a result only when the identical rendering was already delivered to this
+/// context for the identical arguments **and** every read file is unchanged on
+/// disk. Only the state-triggered suffixes the server may append (#498: a
+/// nudge, a checkpoint, kernel context — see [`split_dynamic_suffix`]) are
+/// left out of the comparison, and a new suffix still reaches the model after
+/// the stub. A re-read whose rendering differs (file changed, `auto` resolving
+/// another mode) passes through. `fresh=true` / `raw=true` always pass through.
 fn compute_ctx_read_dedup(v: &serde_json::Value) -> Option<String> {
     let tool_input = payload::resolve_tool_args(v)?;
     let forced = |key: &str| {
@@ -212,7 +215,14 @@ fn compute_ctx_read_dedup(v: &serde_json::Value) -> Option<String> {
     if original.len() < MIN_DEDUP_BYTES || original.starts_with("ERR") {
         return None;
     }
-    let delivered = blake3::hash(original.as_bytes()).to_hex().to_string();
+    let (core, suffix) = split_dynamic_suffix(original);
+    let cwd = v.get("cwd").and_then(|c| c.as_str()).unwrap_or_default();
+    let disk = read_files_fingerprint(&tool_input, cwd)?;
+    let mut fingerprint = blake3::Hasher::new();
+    fingerprint.update(core.as_bytes());
+    fingerprint.update(b"\0");
+    fingerprint.update(disk.as_bytes());
+    let delivered = fingerprint.finalize().to_hex().to_string();
     // The full argument object is the read variant: path, mode, line range,
     // task, aggressiveness … (serde_json maps serialise in key order).
     let variant = format!("ctx_read\u{0}{tool_input}");
@@ -228,7 +238,11 @@ fn compute_ctx_read_dedup(v: &serde_json::Value) -> Option<String> {
         return None;
     }
 
-    let stub = render_ctx_read_dedup_stub(&label, original.lines().count());
+    let mut stub = render_ctx_read_dedup_stub(&label, core.lines().count());
+    if !suffix.is_empty() {
+        stub.push_str("\n\n");
+        stub.push_str(suffix);
+    }
     if stub.len() >= original.len() {
         return None;
     }
@@ -256,6 +270,59 @@ fn compute_ctx_read_dedup(v: &serde_json::Value) -> Option<String> {
         })
         .to_string(),
     )
+}
+
+/// Line heads of the state-triggered suffixes lean-ctx appends to a tool
+/// result (#498): behaviour nudges, activity checkpoints, kernel context.
+const DYNAMIC_SUFFIX_HEADS: [&str; 4] = [
+    "[lean-ctx nudge]",
+    "[CHECKPOINT",
+    "--- kernel context ---",
+    "## Context Kernel",
+];
+
+/// Split a result into its rendering and the trailing state-triggered suffix:
+/// the suffix starts at the first line that begins with a
+/// [`DYNAMIC_SUFFIX_HEADS`] entry. The read files' disk fingerprint is part of
+/// the comparison too, so a file whose own text has such a line can never pass
+/// for unchanged.
+fn split_dynamic_suffix(text: &str) -> (&str, &str) {
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if DYNAMIC_SUFFIX_HEADS.iter().any(|h| line.starts_with(h)) {
+            return (text[..offset].trim_end(), text[offset..].trim_end());
+        }
+        offset += line.len();
+    }
+    (text.trim_end(), "")
+}
+
+/// Content hashes of every file a `ctx_read` names (`path` or `paths`),
+/// resolved against the session `cwd`; `None` when one cannot be hashed (then
+/// nothing is stubbed).
+fn read_files_fingerprint(tool_input: &serde_json::Value, cwd: &str) -> Option<String> {
+    let mut paths: Vec<&str> = Vec::new();
+    if let Some(p) = tool_input.get("path").and_then(|p| p.as_str()) {
+        paths.push(p);
+    }
+    if let Some(list) = tool_input.get("paths").and_then(|p| p.as_array()) {
+        paths.extend(list.iter().filter_map(|p| p.as_str()));
+    }
+    if paths.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for p in paths {
+        let path = std::path::Path::new(p);
+        let resolved = if path.is_absolute() || cwd.is_empty() {
+            path.to_path_buf()
+        } else {
+            std::path::Path::new(cwd).join(path)
+        };
+        out.push_str(&hash_file(resolved.to_str()?)?);
+        out.push('\n');
+    }
+    Some(out)
 }
 
 /// Deterministic (#498) stub for a deduplicated `ctx_read`.
@@ -936,7 +1003,11 @@ mod tests {
         let _lock = crate::core::data_dir::test_env_lock();
         let _guard = guard_env();
         let session = unique_session("cr1");
-        let input = serde_json::json!({ "path": "/repo/src/main.rs", "mode": "full" });
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("main.rs");
+        std::fs::write(&file, big_body()).unwrap();
+        let path = file.to_string_lossy().to_string();
+        let input = serde_json::json!({ "path": path, "mode": "full" });
         let body = big_body();
         let run = |agent: Option<&str>, tool_use: &str| {
             compute_read_dedup(&ctx_read_payload(&session, agent, tool_use, &input, &body))
@@ -945,7 +1016,7 @@ mod tests {
         assert!(run(None, "t1").is_none(), "first read delivers the result");
         let stub = stubbed_text(&run(None, "t2").expect("identical re-read is stubbed"));
         assert!(
-            stub.starts_with("/repo/src/main.rs [unchanged 100L"),
+            stub.starts_with(&format!("{path} [unchanged 100L")),
             "{stub}"
         );
         assert!(stub.contains("fresh=true"), "the escape is named: {stub}");
@@ -964,11 +1035,15 @@ mod tests {
         let _lock = crate::core::data_dir::test_env_lock();
         let _guard = guard_env();
         let session = unique_session("cr2");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.rs");
+        std::fs::write(&file, big_body()).unwrap();
+        let path = file.to_string_lossy().to_string();
         let body = big_body();
         let call = |input: &serde_json::Value, text: &str, tool_use: &str| {
             compute_read_dedup(&ctx_read_payload(&session, None, tool_use, input, text))
         };
-        let full = serde_json::json!({ "path": "/repo/a.rs", "mode": "full" });
+        let full = serde_json::json!({ "path": path, "mode": "full" });
 
         assert!(call(&full, &body, "t1").is_none());
         let changed = format!("{body}// edited\n");
@@ -982,7 +1057,7 @@ mod tests {
         );
         assert!(
             call(
-                &serde_json::json!({ "path": "/repo/a.rs", "mode": "map" }),
+                &serde_json::json!({ "path": path, "mode": "map" }),
                 &changed,
                 "t4"
             )
@@ -991,7 +1066,7 @@ mod tests {
         );
         assert!(
             call(
-                &serde_json::json!({ "path": "/repo/a.rs", "mode": "full", "fresh": true }),
+                &serde_json::json!({ "path": path, "mode": "full", "fresh": true }),
                 &changed,
                 "t5"
             )
@@ -1005,6 +1080,49 @@ mod tests {
         assert!(
             call(&full, "ERROR: file not found", "t6").is_none(),
             "errors are never recorded or stubbed"
+        );
+    }
+
+    /// Live capture (Claude Code, 2026-10-12): the second identical read
+    /// carried a once-per-session `[lean-ctx nudge]` suffix, so a bytes-only
+    /// comparison never stubbed. The rendering is compared, the suffix still
+    /// reaches the model, and a changed file on disk never stubs.
+    #[test]
+    fn ctx_read_dedup_ignores_state_suffixes_but_never_a_changed_file() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let _guard = guard_env();
+        let session = unique_session("cr4");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        std::fs::write(&file, big_body()).unwrap();
+        let input = serde_json::json!({ "path": file.to_string_lossy(), "mode": "full" });
+        let call = |text: &str, tool_use: &str| {
+            compute_read_dedup(&ctx_read_payload(&session, None, tool_use, &input, text))
+        };
+        let nudge = "[lean-ctx nudge] large explicit full/raw read — use map. (once per session)";
+
+        assert!(call(&big_body(), "t1").is_none());
+        let out = call(&format!("{}\n\n{nudge}", big_body()), "t2")
+            .expect("same rendering plus a nudge is a re-read");
+        let stub = stubbed_text(&out);
+        assert!(stub.contains("[unchanged"), "{stub}");
+        assert!(
+            stub.ends_with(nudge),
+            "the new suffix still reaches the model: {stub}"
+        );
+
+        std::fs::write(&file, format!("{}// edited\n", big_body())).unwrap();
+        assert!(
+            call(&big_body(), "t3").is_none(),
+            "a file changed on disk is delivered, whatever the rendering"
+        );
+        assert_eq!(
+            split_dynamic_suffix("a\nb\n\n[CHECKPOINT: x]\n"),
+            ("a\nb", "[CHECKPOINT: x]")
+        );
+        assert_eq!(
+            split_dynamic_suffix("  \"[lean-ctx nudge]\" in code\n"),
+            ("  \"[lean-ctx nudge]\" in code", "")
         );
     }
 

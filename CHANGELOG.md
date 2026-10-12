@@ -6,6 +6,10 @@ Current positioning: [LeanCTX Engine — Context Gateway for AI Systems](docs/PO
 
 ## [Unreleased]
 
+### Added
+
+- **The Claude Code cockpit sidebar can be turned off** (#2057). `/cockpit off` closes the sidebar and keeps it closed in new sessions; `/cockpit on` brings it back, and `/cockpit` still opens it once. The choice is stored as the plugin's **Open the LeanCTX cockpit sidebar** option, also in `/config`. With the sidebar off, the five-minute receipt re-verification that only the sidebar shows stops too; the pulse line, spinner and turn cards stay.
+
 ### Fixed
 
 - **`ctx_callgraph` finds calls written with a module path.** A call such as `crate::config_io::write_atomic_with_backup(..)` or `compound_lexer::split_compound(..)` was invisible to `callers`, `callees`, `trace` and `risk`: `write_atomic_with_backup` showed 3 callers instead of 83. Queries now match a call by its path segments, so `write`, `config_io::write` and `crate::config_io::write` all find it, while `a::save` never matches `b::save`. A path call whose module or type names exactly one defining file (`config_io::write` → `config_io.rs`, `Repo::save` → the file defining `Repo`) is now bound to that file as `[resolved]` instead of `[ambiguous]`. Stored code graphs rebuild once on the next query.
