@@ -84,8 +84,41 @@ pub(crate) fn source_revision(path: &str) -> Option<String> {
     let role = crate::core::roles::active_role();
     let allow_secret = role.io.allow_secret_paths;
     let role_fingerprint = crate::core::policy::runtime::role_fingerprint(&role).ok()?;
-    crate::core::search_index::corpus_signature(path, true, allow_secret)
-        .map(|revision| format!("{revision}:role={role_fingerprint}"))
+    crate::core::search_index::corpus_signature(path, true, allow_secret).map(|revision| {
+        format!(
+            "{revision}:role={role_fingerprint}:dense={}",
+            dense_stamp(Path::new(path))
+        )
+    })
+}
+
+/// Compose ranks with the dense index too, so its result depends on more than
+/// the corpus: switching the embedding model or rebuilding the vectors must not
+/// keep serving results ranked by the old ones (#2060). Model name plus the
+/// size and mtime of `embeddings.bin` — a metadata read, no index load.
+fn dense_stamp(root: &Path) -> String {
+    #[cfg(feature = "embeddings")]
+    {
+        let model = crate::core::embeddings::model_registry::resolve_model();
+        let vectors = crate::core::index_namespace::vectors_dir(root).join("embeddings.bin");
+        let file = std::fs::metadata(vectors).ok().map_or_else(
+            || "none".to_string(),
+            |meta| {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_nanos());
+                format!("{}@{mtime}", meta.len())
+            },
+        );
+        format!("{model:?}/{file}")
+    }
+    #[cfg(not(feature = "embeddings"))]
+    {
+        let _ = root;
+        "off".to_string()
+    }
 }
 
 pub fn global() -> &'static ComposeSectionCache {
@@ -170,6 +203,31 @@ mod tests {
         std::fs::write(&source, "fn after_policy_removal() {}\n").unwrap();
         assert_eq!(cache.check("task", &root), None);
         assert!(!cache.record("task", &root, "old derived result".to_string(), &revision));
+    }
+
+    /// #2060: a rebuilt (or newly built) dense index invalidates cached
+    /// results — they were ranked without it or with other vectors.
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn section_cache_rejects_a_rebuilt_dense_index() {
+        let _policy = crate::core::policy::runtime::TestPolicyOverride::set(None);
+        let _lock = crate::core::data_dir::test_env_lock();
+        let data = tempfile::tempdir().unwrap();
+        crate::test_env::set_var("LEAN_CTX_DATA_DIR", data.path());
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("source.rs"), "fn sample() {}\n").unwrap();
+        let path = root.path().to_str().unwrap();
+        let cache = ComposeSectionCache::default();
+        let revision = super::source_revision(path).unwrap();
+        assert!(cache.record("task", path, "derived text".into(), &revision));
+        assert_eq!(cache.check("task", path).as_deref(), Some("derived text"));
+
+        let vectors = crate::core::index_namespace::vectors_dir(root.path());
+        std::fs::create_dir_all(&vectors).unwrap();
+        std::fs::write(vectors.join("embeddings.bin"), b"vectors").unwrap();
+        let after = cache.check("task", path);
+        crate::test_env::remove_var("LEAN_CTX_DATA_DIR");
+        assert_eq!(after, None);
     }
 
     #[test]
