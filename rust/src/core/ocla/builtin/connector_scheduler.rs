@@ -57,7 +57,7 @@ impl OclaService for BuiltinConnectorScheduler {
 impl ConnectorScheduler for BuiltinConnectorScheduler {
     fn schedule_connector(&self, job: ConnectorJob) -> OclaResult<ScheduledJob> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let scheduled = crate::proxy::providers::schedule_connector(&job, seq)?;
+        let scheduled = crate::proxy::connector_schedule::schedule_connector(&job, seq)?;
 
         let mut queue = self
             .queue

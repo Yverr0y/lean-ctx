@@ -395,6 +395,12 @@ jobs:
       - name: Check build without tree-sitter
         working-directory: rust
         run: cargo check --no-default-features --features "embeddings,http-server,secure-update,jemalloc"
+      # The bare build the #586 changelog promised ports: no feature at all.
+      # It rotted to 99 errors once only combos with `http-server` were
+      # checked; `http-server` now gates the servers alone.
+      - name: Check build with no features
+        working-directory: rust
+        run: cargo check --no-default-features
 
   fmt:
     name: Format

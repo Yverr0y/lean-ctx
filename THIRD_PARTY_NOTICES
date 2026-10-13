@@ -2,15 +2,15 @@
 Schema: leanctx.third-party-notices/v1
 Status: GENERATED AND APPROVED
 Content-Digest-Scope: SHA-256 of this file with the Content-Digest value zeroed
-Content-Digest: sha256:b073ad31616a6e3a04f1c691bcb847c1ec93e3d41bf0483758f26d3f8c23e094
+Content-Digest: sha256:38a71be5fd2a5dd4d234c1bab28cb4407e70c88bed987ca1304fe62ef351a095
 Source inventory: rust/Cargo.lock + cargo metadata --locked --offline --all-features + SBOM.cdx.json + legal/third-party-assets.toml + packages/pi-lean-ctx/package-lock.json
 Generation command: cargo metadata --locked --offline --all-features --manifest-path rust/Cargo.toml --format-version 1
 Approval contract: legal/third-party-notices-approval.toml binds approved_content_sha256 to this file's exact SHA-256
-Cargo.lock SHA-256: adb751a04610ce52a7338b4c0ad5a4e0b6e1c4cf5ac1fe4727fe29e512d2702f
-Cargo metadata inventory SHA-256: f4e96da2e979f7f027607f71c6b42f86a24d0e070cfbccb30ce9753cdc1e6caa
-SBOM.cdx.json SHA-256: 43a48c7a681586700b9f017e4002247a6342fe31befe9566ba81ca2d21f6bf9b
+Cargo.lock SHA-256: b42f0143325c52c42c601f472a2f21f5e9d7d1e5883052cc4745c9da2883d432
+Cargo metadata inventory SHA-256: 66a42ada9f8fd5fa39fe0f2ae171d3471dc0034667403a17b8589fa6e55561d2
+SBOM.cdx.json SHA-256: 05595d7a5642f7463fc50ff8cc32b4bb722c23e795433f7f522e459ddfdcba55
 SBOM components: 540
-Asset manifest SHA-256: ecb0ca4bd5570e13f1f5f94e45e2ae78cc7aab825ee6fe57ed601c4e37b11ff9
+Asset manifest SHA-256: 2f843cde60668647485c0539c131d6de5f85e48062e8338788dbb35e486e61c1
 npm package-lock.json SHA-256: df993605fd30412428c0ac5ab7b8caaee9b4ad5e49ff069cc07939fd705fd5a4
 Bundled MCP SDK: @modelcontextprotocol/sdk 1.32.1 (sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw==)
 Cargo graph packages: 594
@@ -2457,7 +2457,7 @@ Targets: bench[bench], build-script-build[custom-build], client[example], connec
 Features: __rustls-post-quantum-test, async-io, async-std, aws-lc-rs, aws-lc-rs-fips, bloom, default, futures-io, lock_tracking, log, platform-verifier, qlog, ring, runtime-async-std, runtime-smol, runtime-tokio, rustls, rustls-aws-lc-rs, rustls-aws-lc-rs-fips, rustls-log, rustls-ring, smol
 Dependencies: bytes, cfg_aliases, pin-project-lite, quinn-proto, quinn-udp, rustc-hash, rustls, socket2, thiserror, tokio, tracing, web-time
 
-### quinn-proto 0.11.16
+### quinn-proto 0.11.19
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/quinn-rs/quinn
 SPDX-License-Identifier: MIT OR Apache-2.0

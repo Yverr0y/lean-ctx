@@ -124,10 +124,8 @@ ort-coreml = ["ort?/coreml"]
 http-server = [
   "dep:axum",
   "dep:tower-http",
-  "dep:reqwest",
   "dep:tokio-tungstenite",
   "dep:rustls",
-  "dep:hex",
 ]
 qdrant = ["embeddings"]
 pgvector = ["embeddings"]
@@ -205,7 +203,8 @@ tokio = { version = "1.52", features = [
 ] }
 serde = { version = "1.0", features = ["derive"] }
 # Durable observations must preserve finite IEEE-754 values when read back.
-serde_json = { version = "1.0", features = ["float_roundtrip"] }
+# `raw_value`: context checkpoints keep signed sub-documents byte-exact.
+serde_json = { version = "1.0", features = ["float_roundtrip", "raw_value"] }
 rustc-hash = "2.1"
 clap = { version = "4.5", features = ["derive"] }
 subtle = "2.6"
@@ -312,7 +311,9 @@ tower-http = { version = "0.7", features = ["cors", "auth"], optional = true }
 # Non-optional since GH #727: `kind=skills` document blobs (featureless
 # context_package core) encode zstd bodies as base64 inside the pack JSON.
 base64 = "0.22"
-hex = { version = "0.4", optional = true }
+# Client-side building blocks every build needs (cloud sync, entitlements,
+# digests): never behind `http-server`, which gates the *servers* (#586).
+hex = "0.4"
 hmac = "0.13"
 sha2 = "0.11"
 hkdf = "0.13"
@@ -330,7 +331,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "stream",
   "json",
   "cookies",
-], optional = true }
+] }
 bytecount = "0.6"
 libc = "0.2"
 blake3 = "1.8"

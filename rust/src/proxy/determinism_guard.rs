@@ -12,10 +12,9 @@ use std::{
     path::PathBuf,
 };
 
-use axum::{
-    http::{HeaderMap, HeaderValue, request::Parts},
-    response::Response,
-};
+// `http` types (what axum re-exports): the proof, audit and header helpers
+// build without the `http-server` feature (#586).
+use http::{HeaderMap, HeaderValue, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -127,7 +126,12 @@ pub fn cache_relevant_messages(request: &Value) -> Vec<Value> {
 /// Parses an incoming proxy body without mutating it, including supported
 /// content encodings. Invalid bodies intentionally yield `None` and pass through.
 #[must_use]
-pub fn parse_request_body(body: &[u8], parts: &Parts, limit: usize) -> Option<Value> {
+#[cfg(feature = "http-server")]
+pub fn parse_request_body(
+    body: &[u8],
+    parts: &http::request::Parts,
+    limit: usize,
+) -> Option<Value> {
     use crate::proxy::codec::{
         RequestBodyEncoding, decode_gzip_bounded, decode_zstd_bounded, request_body_encoding,
     };
@@ -142,7 +146,7 @@ pub fn parse_request_body(body: &[u8], parts: &Parts, limit: usize) -> Option<Va
 }
 
 /// Applies the public verification headers to a proxied response.
-pub fn apply_response_headers(response: &mut Response, proof: &DeterminismProof) {
+pub fn apply_response_headers<B>(response: &mut Response<B>, proof: &DeterminismProof) {
     let headers = response.headers_mut();
     headers.insert(
         "x-leanctx-determinism",
@@ -166,7 +170,7 @@ pub fn apply_response_headers(response: &mut Response, proof: &DeterminismProof)
 
 /// Adds deterministic defaults for responses that never enter the shared
 /// forwarder (health, auth refusals, local APIs, and WebSocket handshakes).
-pub fn ensure_response_headers(response: &mut Response) {
+pub fn ensure_response_headers<B>(response: &mut Response<B>) {
     if !response.headers().contains_key("x-leanctx-determinism") {
         apply_response_headers(response, &verify_determinism(&[], &[]));
     }
@@ -174,7 +178,7 @@ pub fn ensure_response_headers(response: &mut Response) {
 
 fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) {
     if let (Ok(header_name), Ok(header_value)) = (
-        axum::http::HeaderName::from_bytes(name.as_bytes()),
+        http::HeaderName::from_bytes(name.as_bytes()),
         HeaderValue::from_str(value),
     ) {
         headers.insert(header_name, header_value);
@@ -360,7 +364,7 @@ fn message_has_cache_control(message: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use axum::{body::Body, response::Response};
+    use http::Response;
     use serde_json::json;
 
     use super::{apply_response_headers, canonical_messages, verify_determinism};
@@ -474,7 +478,7 @@ mod tests {
     #[test]
     fn proof_headers_are_set() {
         let proof = verify_determinism(&[], &[]);
-        let mut response = Response::new(Body::empty());
+        let mut response = Response::new(());
 
         apply_response_headers(&mut response, &proof);
 

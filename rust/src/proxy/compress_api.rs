@@ -31,6 +31,7 @@
 //! — savings are reported in `stats`, never injected into message bodies — so the
 //! result stays byte-stable for provider prompt caching.
 
+#[cfg(feature = "http-server")]
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -84,6 +85,7 @@ struct Totals {
 }
 
 /// Axum handler. Malformed bodies are rejected by the `Json` extractor (400).
+#[cfg(feature = "http-server")]
 pub async fn handler(Json(req): Json<CompressRequest>) -> impl IntoResponse {
     (StatusCode::OK, Json(compress_messages(req)))
 }
