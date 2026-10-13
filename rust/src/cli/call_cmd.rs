@@ -259,6 +259,9 @@ pub(crate) fn run_call(args: &[String]) -> Result<String, CallError> {
 /// Thin CLI wrapper: print result to stdout (exit 0, even for functional
 /// "ERROR:"/"BACKEND_REQUIRED:" output), or usage error to stderr (exit 2).
 pub(crate) fn cmd_call(args: &[String]) {
+    // The printed result is all the caller sees: a delivery stub or a
+    // cross-agent cache reference would point at content it never received.
+    crate::core::conversation::mark_one_shot_process();
     match run_call(args) {
         Ok(text) => println!("{text}"),
         Err(e) => {

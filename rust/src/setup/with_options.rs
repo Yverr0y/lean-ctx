@@ -488,7 +488,7 @@ fn build_claude_mod_step(opts: SetupOptions, targets: &[EditorTarget]) -> Option
     };
     let quiet = opts.json;
     match claude_mod::status() {
-        status @ (ModStatus::ClaudeMissing | ModStatus::ClaudeTooOld(_)) => {
+        status @ (ModStatus::ClaudeMissing(_) | ModStatus::ClaudeTooOld(_)) => {
             step.items.push(item("skipped", status.describe()));
         }
         ModStatus::Current(v) => step.items.push(item("already", v)),

@@ -44,8 +44,9 @@ const CLAUDE_TIMEOUT: Duration = Duration::from_mins(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModStatus {
-    /// No `claude` binary on PATH.
-    ClaudeMissing,
+    /// No usable `claude`: not on PATH, untrusted location, or it failed to
+    /// run — the reason is kept so the user sees which (#2061).
+    ClaudeMissing(String),
     /// Claude Code is older than [`MIN_CLAUDE_VERSION`].
     ClaudeTooOld(String),
     NotInstalled,
@@ -60,7 +61,7 @@ impl ModStatus {
     pub fn describe(&self) -> String {
         let want = mod_version();
         match self {
-            Self::ClaudeMissing => "Claude Code not found on PATH".to_string(),
+            Self::ClaudeMissing(reason) => format!("Claude Code not usable: {reason}"),
             Self::ClaudeTooOld(v) => format!(
                 "Claude Code {v} predates mods (needs {}.{}.{}+)",
                 MIN_CLAUDE_VERSION.0, MIN_CLAUDE_VERSION.1, MIN_CLAUDE_VERSION.2
@@ -184,8 +185,9 @@ pub fn installed_version(list_json: &str) -> Option<String> {
 
 /// Current lifecycle state. Runs `claude --version` and `claude plugin list`.
 pub fn status() -> ModStatus {
-    let Ok(version_out) = run_claude(&["--version"]) else {
-        return ModStatus::ClaudeMissing;
+    let version_out = match run_claude(&["--version"]) {
+        Ok(out) => out,
+        Err(reason) => return ModStatus::ClaudeMissing(reason),
     };
     let version = version_out
         .split_whitespace()
@@ -211,7 +213,7 @@ pub fn status() -> ModStatus {
 pub fn install() -> Result<String, String> {
     let before = status();
     match &before {
-        ModStatus::ClaudeMissing | ModStatus::ClaudeTooOld(_) => {
+        ModStatus::ClaudeMissing(_) | ModStatus::ClaudeTooOld(_) => {
             return Err(before.describe());
         }
         ModStatus::Current(_) | ModStatus::NotInstalled | ModStatus::Stale(_) => {}
@@ -284,8 +286,8 @@ pub fn cache_dir_name(version: &str) -> String {
 /// Claude Code no longer lists the plugin — deleting them first would leave a
 /// registered plugin pointing at a missing directory.
 pub fn uninstall() -> Result<String, String> {
-    if matches!(status(), ModStatus::ClaudeMissing) {
-        return Err(ModStatus::ClaudeMissing.describe());
+    if let missing @ ModStatus::ClaudeMissing(_) = status() {
+        return Err(missing.describe());
     }
     let uninstall = run_claude(&["plugin", "uninstall", PLUGIN_ID, "--scope", "user"]);
     let remove = run_claude(&["plugin", "marketplace", "remove", MARKETPLACE]);
