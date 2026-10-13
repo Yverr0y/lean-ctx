@@ -1,5 +1,5 @@
 schema = "leanctx.third-party-notices-approval/v1"
-approved_content_sha256 = "8e7c3f6fef105ed301421a861b5b25e08335238fd53f43ba8fc92a24405fc05a"
+approved_content_sha256 = "5e3e5424e85871d4f84086b527f0f89f23cf2d42457a7ad7d1cef712b26dec0d"
 approving_owner = "Yves Gugger"
-approval_evidence = "Copyright owner approval of the generated THIRD_PARTY_NOTICES (GENERATED AND APPROVED variant of scripts/generate-third-party-notices.py) for the 3.11.4 bugfix release inputs: the engine version bump to 3.11.4 changes only the Cargo.lock, SBOM and npm lock digests; no dependency, license or notice text changes."
-approved_at = "2026-10-11"
+approval_evidence = "Copyright owner approval of the generated THIRD_PARTY_NOTICES (GENERATED AND APPROVED variant of scripts/generate-third-party-notices.py) for the quinn-proto 0.11.16 -> 0.11.19 security bump (RUSTSEC-2026-0338..0342): only the quinn-proto version and the Cargo.lock, SBOM and asset-manifest digests change; no license or notice text changes."
+approved_at = "2026-10-13"
