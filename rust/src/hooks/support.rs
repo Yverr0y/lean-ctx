@@ -543,7 +543,24 @@ pub(super) fn remove_lean_ctx_codex_managed_entries(
     else {
         return;
     };
-    entries.retain(|entry| !is_lean_ctx_codex_managed_entry(event_name, entry));
+    entries.retain_mut(|entry| {
+        if !is_lean_ctx_codex_managed_entry(event_name, entry) {
+            return true;
+        }
+        let Some(hooks) = entry
+            .get_mut("hooks")
+            .and_then(|value| value.as_array_mut())
+        else {
+            return false;
+        };
+        hooks.retain(|hook| {
+            !hook
+                .get("command")
+                .and_then(|value| value.as_str())
+                .is_some_and(|command| is_lean_ctx_codex_managed_command(event_name, command))
+        });
+        !hooks.is_empty()
+    });
     if entries.is_empty() {
         hooks_obj.remove(event_name);
     }
@@ -559,9 +576,7 @@ pub(super) fn is_lean_ctx_codex_managed_entry(event_name: &str, entry: &serde_js
     // versions. These block the transparent redirect in codex-pretooluse.
     if event_name == "PreToolUse" {
         if let Some(cmd) = entry_obj.get("command").and_then(|v| v.as_str()) {
-            if cmd.contains("lean-ctx")
-                && (cmd.contains("hook deny") || cmd.contains("hook rewrite"))
-            {
+            if is_lean_ctx_codex_managed_command(event_name, cmd) {
                 return true;
             }
         }
@@ -580,14 +595,41 @@ pub(super) fn is_lean_ctx_codex_managed_entry(event_name: &str, entry: &serde_js
                 matches!(
                     entry_obj.get("matcher").and_then(|value| value.as_str()),
                     Some("Bash" | CODEX_PRE_TOOL_USE_MATCHER)
-                ) && command.contains("lean-ctx")
-                    && (command.contains("hook rewrite")
-                        || command.contains("hook codex-pretooluse"))
+                ) && is_lean_ctx_codex_managed_command(event_name, command)
             }
-            "SessionStart" => {
-                command.contains("lean-ctx") && command.contains("hook codex-session-start")
-            }
+            "SessionStart" => is_lean_ctx_codex_managed_command(event_name, command),
             _ => false,
         }
     })
+}
+
+fn is_lean_ctx_codex_managed_command(event_name: &str, command: &str) -> bool {
+    let Some((_, action)) = command.trim().rsplit_once(" hook ") else {
+        return false;
+    };
+    let managed_action = match event_name {
+        "PreToolUse" => matches!(action, "codex-pretooluse" | "deny" | "rewrite"),
+        "SessionStart" => action == "codex-session-start",
+        _ => false,
+    };
+    managed_action && is_lean_ctx_hook_command(command, action)
+}
+
+pub(super) fn is_lean_ctx_hook_command(command: &str, operation: &str) -> bool {
+    let Some((binary, action)) = command.trim().rsplit_once(" hook ") else {
+        return false;
+    };
+    let binary = binary.trim();
+    let quoted = binary.len() >= 2
+        && ((binary.starts_with('"') && binary.ends_with('"'))
+            || (binary.starts_with('\'') && binary.ends_with('\'')));
+    let binary_body = if quoted {
+        &binary[1..binary.len() - 1]
+    } else {
+        binary
+    };
+    action == operation
+        && !binary_body.contains(['\'', '"', '`'])
+        && (quoted || !binary_body.chars().any(char::is_whitespace))
+        && crate::core::portable_binary::is_lean_ctx_hook_binary(binary)
 }

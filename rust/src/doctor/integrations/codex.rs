@@ -300,9 +300,13 @@ pub(crate) fn check_codex_hooks_json(home: &std::path::Path, binary: &str) -> Na
     } else {
         format!("ok ({})", path.display())
     };
-    NamedCheck {
-        name: "Codex hooks.json".to_string(),
-        ok,
-        detail,
-    }
+    super::hooks::with_missing_programs(
+        NamedCheck {
+            name: "Codex hooks.json".to_string(),
+            ok,
+            detail,
+        },
+        &path,
+        &content,
+    )
 }

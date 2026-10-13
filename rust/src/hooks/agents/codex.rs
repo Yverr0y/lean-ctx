@@ -192,6 +192,10 @@ fn install_codex_hook_config(codex_dir: &std::path::Path) -> bool {
 
 fn ensure_codex_observe_hooks(root: &mut serde_json::Value, observe_cmd: &str) -> bool {
     let original = root.clone();
+    let is_observe = |command: &str| {
+        command == observe_cmd
+            || crate::hooks::support::is_lean_ctx_hook_command(command, "observe")
+    };
     let Some(hooks_obj) = root
         .as_object_mut()
         .and_then(|r| r.get_mut("hooks"))
@@ -245,19 +249,11 @@ fn ensure_codex_observe_hooks(root: &mut serde_json::Value, observe_cmd: &str) -
                 && hooks[0]
                     .get("command")
                     .and_then(|c| c.as_str())
-                    .is_some_and(|c| c.contains("hook observe"))
+                    .is_some_and(is_observe)
         });
-        let leanctx_entry_idx = entries.iter().position(|e| {
-            e.get("hooks")
-                .and_then(|h| h.as_array())
-                .is_some_and(|hooks| {
-                    hooks.iter().any(|hook| {
-                        hook.get("command")
-                            .and_then(|c| c.as_str())
-                            .is_some_and(|c| c.contains("lean-ctx") && !c.contains("hook observe"))
-                    })
-                })
-        });
+        let leanctx_entry_idx = entries
+            .iter()
+            .position(|entry| crate::hooks::support::is_lean_ctx_codex_managed_entry(event, entry));
         if let (Some(standalone), Some(target)) = (observe_standalone_idx, leanctx_entry_idx) {
             // Remove standalone first (shifts indices if standalone < target)
             entries.remove(standalone);
@@ -275,7 +271,7 @@ fn ensure_codex_observe_hooks(root: &mut serde_json::Value, observe_cmd: &str) -
                 let already = hooks_arr.iter().any(|h| {
                     h.get("command")
                         .and_then(|c| c.as_str())
-                        .is_some_and(|c| c.contains("hook observe"))
+                        .is_some_and(is_observe)
                 });
                 if !already {
                     hooks_arr.push(observe_hook.clone());
@@ -292,7 +288,7 @@ fn ensure_codex_observe_hooks(root: &mut serde_json::Value, observe_cmd: &str) -
                     hooks.iter().any(|hook| {
                         hook.get("command")
                             .and_then(|c| c.as_str())
-                            .is_some_and(|c| c.contains("hook observe"))
+                            .is_some_and(is_observe)
                     })
                 })
         });
@@ -303,16 +299,7 @@ fn ensure_codex_observe_hooks(root: &mut serde_json::Value, observe_cmd: &str) -
         // Merge into existing lean-ctx entry instead of creating a duplicate
         // that fires a separate `hook: <Event>` log line (GL #1398).
         let merged = entries.iter_mut().any(|entry| {
-            let dominated = entry
-                .get("hooks")
-                .and_then(|h| h.as_array())
-                .is_some_and(|hooks| {
-                    hooks.iter().any(|hook| {
-                        hook.get("command")
-                            .and_then(|c| c.as_str())
-                            .is_some_and(|c| c.contains("lean-ctx"))
-                    })
-                });
+            let dominated = crate::hooks::support::is_lean_ctx_codex_managed_entry(event, entry);
             if !dominated {
                 return false;
             }
@@ -366,10 +353,14 @@ fn normalize_codex_observe_hooks(
             let is_observe = hook
                 .get("command")
                 .and_then(|command| command.as_str())
-                .is_some_and(|command| command == observe_cmd || command.contains("hook observe"));
+                .is_some_and(|command| {
+                    command == observe_cmd
+                        || crate::hooks::support::is_lean_ctx_hook_command(command, "observe")
+                });
             if is_observe {
                 contains_observe = true;
                 if let Some(object) = hook.as_object_mut() {
+                    object.insert("command".to_string(), serde_json::json!(observe_cmd));
                     object.insert("timeout".to_string(), serde_json::json!(timeout_secs));
                 }
             } else {
@@ -646,6 +637,81 @@ mod tests {
             !crate::hooks::support::is_lean_ctx_codex_managed_entry("PreToolUse", &custom),
             "custom Codex hooks must be preserved"
         );
+    }
+
+    #[test]
+    fn legacy_cleanup_preserves_custom_wrappers_and_shell_mentions() {
+        for command in [
+            "/custom/lean-ctx-wrapper hook rewrite",
+            "/custom/lean-ctx-wrapper hook deny",
+            "echo lean-ctx hook rewrite",
+            "\"echo\" \"/custom/lean-ctx\" hook rewrite",
+        ] {
+            let flat = json!({"command": command});
+            let grouped = json!({"matcher": "Bash", "hooks": [{"command": command}]});
+            for entry in [flat, grouped] {
+                assert!(
+                    !crate::hooks::support::is_lean_ctx_codex_managed_entry("PreToolUse", &entry),
+                    "custom command must remain: {command}"
+                );
+            }
+        }
+        for command in ["lean-ctx hook deny", "/old/lean-ctx hook rewrite"] {
+            assert!(crate::hooks::support::is_lean_ctx_codex_managed_entry(
+                "PreToolUse",
+                &json!({"command": command})
+            ));
+        }
+    }
+
+    #[test]
+    fn refresh_removes_stale_binaries_and_preserves_shared_custom_hooks() {
+        let mut input = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash|Read|Grep|Glob",
+                    "hooks": [
+                        {"command": "/private/tmp/leanctx-check/lean-ctx hook codex-pretooluse"},
+                        {"command": "echo keep-pre"},
+                        {"command": "/custom/guard hook codex-pretooluse"}
+                    ]
+                }],
+                "SessionStart": [{
+                    "matcher": "startup|resume|clear",
+                    "hooks": [
+                        {"command": "/private/tmp/leanctx-check/lean-ctx hook codex-session-start"},
+                        {"command": "echo keep-session"},
+                        {"command": "/custom/guard hook codex-session-start"}
+                    ]
+                }]
+            }
+        });
+        let session = "/current/lean-ctx hook codex-session-start";
+        let pretool = "/current/lean-ctx hook codex-pretooluse";
+        assert!(upsert_lean_ctx_codex_hook_entries(
+            &mut input, session, pretool
+        ));
+        for (event, custom, current) in [
+            ("PreToolUse", "echo keep-pre", pretool),
+            ("SessionStart", "echo keep-session", session),
+        ] {
+            let commands: Vec<_> = input["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|entry| entry["hooks"].as_array().unwrap())
+                .map(|hook| hook["command"].as_str().unwrap())
+                .collect();
+            let guard = if event == "PreToolUse" {
+                "/custom/guard hook codex-pretooluse"
+            } else {
+                "/custom/guard hook codex-session-start"
+            };
+            assert_eq!(commands, vec![custom, guard, current]);
+        }
+        assert!(!upsert_lean_ctx_codex_hook_entries(
+            &mut input, session, pretool
+        ));
     }
 
     #[test]
@@ -1008,6 +1074,45 @@ command = \"other\"
             ensure_codex_mcp_server(&result, "lean-ctx", &data_dir_pairs()).is_none(),
             "heal must be idempotent"
         );
+    }
+
+    #[test]
+    fn observe_refresh_preserves_custom_handlers_and_replaces_stale_owned_commands() {
+        let custom = serde_json::json!({
+            "matcher": "custom-event",
+            "hooks": [{"type": "command", "command": "/custom/guard hook observe", "timeout": 99}]
+        });
+        let mut root = serde_json::json!({"hooks": {}});
+        for event in ["PostToolUse", "SessionStart", "SessionEnd"] {
+            root["hooks"][event] = serde_json::json!([
+                custom.clone(),
+                {"matcher": ".*", "hooks": [{"type": "command", "command": "/old/lean-ctx hook observe", "timeout": 99}]}
+            ]);
+        }
+        root["hooks"]["SessionStart"].as_array_mut().unwrap().push(serde_json::json!({
+            "matcher": "startup|resume|clear",
+            "hooks": [{"type": "command", "command": "/current/lean-ctx hook codex-session-start"}]
+        }));
+        let command = "/current/lean-ctx hook observe";
+        assert!(ensure_codex_observe_hooks(&mut root, command));
+        for event in ["PostToolUse", "SessionStart", "SessionEnd"] {
+            let entries = root["hooks"][event].as_array().unwrap();
+            assert_eq!(
+                entries[0], custom,
+                "custom {event} handler must stay intact"
+            );
+            let commands: Vec<_> = entries
+                .iter()
+                .flat_map(|entry| entry["hooks"].as_array().unwrap())
+                .map(|hook| hook["command"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                commands.iter().filter(|value| **value == command).count(),
+                1
+            );
+            assert!(!commands.contains(&"/old/lean-ctx hook observe"));
+        }
+        assert!(!ensure_codex_observe_hooks(&mut root, command));
     }
 
     #[test]

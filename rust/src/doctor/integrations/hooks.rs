@@ -361,5 +361,30 @@ pub(crate) fn check_claude_hooks(path: &std::path::Path, binary: &str) -> NamedC
     let entries_ok = joined.contains(" hook rewrite")
         && (joined.contains(" hook redirect") || joined.contains(" hook deny"));
     let stale = stale_hook_binary(&joined, binary);
-    finalize_hook_check("Hooks", path, entries_ok, stale)
+    let check = finalize_hook_check("Hooks", path, entries_ok, stale);
+    // Every event's hooks, not only lean-ctx's: Claude Code runs them all.
+    let all_hooks = v.get("hooks").map(ToString::to_string).unwrap_or_default();
+    with_missing_programs(check, path, &all_hooks)
+}
+
+/// Fails an otherwise healthy hook check when a hook entry runs a program that
+/// no longer exists ([`super::wiring::missing_hook_programs`]).
+pub(crate) fn with_missing_programs(
+    check: NamedCheck,
+    path: &std::path::Path,
+    hooks_json: &str,
+) -> NamedCheck {
+    let missing = super::wiring::missing_hook_programs(hooks_json);
+    if !check.ok || missing.is_empty() {
+        return check;
+    }
+    NamedCheck {
+        ok: false,
+        detail: format!(
+            "a hook runs a program that no longer exists: {} — remove that entry from {}",
+            missing.join(", "),
+            path.display()
+        ),
+        ..check
+    }
 }

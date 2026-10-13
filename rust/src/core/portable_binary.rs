@@ -16,6 +16,17 @@ pub(crate) fn hook_binary_override() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Identify our hook executable without treating arbitrary user wrappers as owned.
+pub(crate) fn is_lean_ctx_hook_binary(binary: &str) -> bool {
+    let binary = binary.trim().trim_matches(['\'', '"']);
+    let name = binary.rsplit(['/', '\\']).next().unwrap_or(binary);
+    matches!(
+        name,
+        "lean-ctx" | "lean-ctx.exe" | "lean-ctx.cmd" | "lean-ctx.bat"
+    ) || hook_binary_override()
+        .is_some_and(|configured| configured.trim_matches(['\'', '"']) == binary)
+}
+
 pub(crate) fn resolve_portable_binary() -> String {
     let current = std::env::current_exe()
         .ok()

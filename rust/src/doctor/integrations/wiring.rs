@@ -239,37 +239,148 @@ fn same_windows_path(a: &str, b: &str) -> bool {
 /// `"<binary> hook codex-pretooluse"`, so the token directly preceding a
 /// ` hook ` delimiter is the binary the hook will execute.
 pub(crate) fn hook_binary_refs(content: &str) -> Vec<String> {
-    let pieces: Vec<&str> = content.split(" hook ").collect();
-    if pieces.len() < 2 {
-        return Vec::new();
+    fn binary_ref(prefix: &str) -> Option<String> {
+        let prefix = prefix.trim();
+        let quoted = prefix.len() >= 2
+            && ((prefix.starts_with('"') && prefix.ends_with('"'))
+                || (prefix.starts_with('\'') && prefix.ends_with('\'')));
+        let binary = if quoted {
+            &prefix[1..prefix.len() - 1]
+        } else {
+            if prefix.chars().any(char::is_whitespace) {
+                return None;
+            }
+            prefix.trim_matches(['\'', '"'])
+        };
+        if binary.contains(['\'', '"', '`']) {
+            return None;
+        }
+        crate::core::portable_binary::is_lean_ctx_hook_binary(binary).then(|| binary.to_string())
     }
-    pieces[..pieces.len() - 1]
-        .iter()
-        .filter_map(|piece| {
-            // The binary token is the trailing run before " hook ", bounded by
-            // whitespace or JSON string delimiters. Splitting on whitespace
-            // alone breaks on minified JSON (e.g. `serde_json::to_string`
-            // output), where there is no space between the opening quote and
-            // the command — we would otherwise capture the whole JSON prefix.
-            piece
-                .rsplit(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`')
-                .find(|tok| !tok.is_empty())
-                .map(|tok| tok.trim_end_matches(',').to_string())
-        })
-        .filter(|tok| tok.contains("lean-ctx"))
+
+    fn collect(value: &serde_json::Value, refs: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(command) = object.get("command").and_then(|value| value.as_str())
+                    && let Some((prefix, _)) = command.split_once(" hook ")
+                    && let Some(binary) = binary_ref(prefix)
+                {
+                    refs.push(binary);
+                }
+                for child in object
+                    .values()
+                    .filter(|child| child.is_object() || child.is_array())
+                {
+                    collect(child, refs);
+                }
+            }
+            serde_json::Value::Array(array) => {
+                for child in array
+                    .iter()
+                    .filter(|child| child.is_object() || child.is_array())
+                {
+                    collect(child, refs);
+                }
+            }
+            serde_json::Value::String(command) => {
+                if let Some((prefix, _)) = command.split_once(" hook ")
+                    && let Some(binary) = binary_ref(prefix)
+                {
+                    refs.push(binary);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Ok(value) = crate::core::jsonc::parse_jsonc(content) {
+        let mut refs = Vec::new();
+        collect(&value, &mut refs);
+        return refs;
+    }
+
+    // Some legacy callers concatenate JSON entries rather than an array.
+    // Parse each complete value instead of extracting arbitrary shell tokens.
+    let mut refs = Vec::new();
+    let mut parsed_any = false;
+    for value in serde_json::Deserializer::from_str(content).into_iter::<serde_json::Value>() {
+        let Ok(value) = value else { break };
+        parsed_any = true;
+        collect(&value, &mut refs);
+    }
+    if parsed_any {
+        return refs;
+    }
+    content
+        .lines()
+        .filter_map(|line| line.split_once(" hook "))
+        .filter_map(|(prefix, _)| binary_ref(prefix))
         .collect()
 }
 
 /// If a hook file references a `lean-ctx` binary path that does not match the
-/// currently installed binary (and none of its references do), return that
-/// stale path. Returns `None` when there are no hook references or at least one
-/// reference points at the current binary (or the bare `lean-ctx` PATH command).
+/// currently installed binary, return the first stale path. Every configured
+/// hook runs independently, so a current reference cannot make another safe.
 pub(crate) fn stale_hook_binary(content: &str, binary: &str) -> Option<String> {
-    let refs = hook_binary_refs(content);
-    if refs.is_empty() || refs.iter().any(|r| cmd_matches_expected(r, binary)) {
-        return None;
+    hook_binary_refs(content)
+        .into_iter()
+        .find(|reference| !cmd_matches_expected(reference, binary))
+}
+
+/// Absolute programs that hook commands in `content` (a hooks file, JSON) run
+/// but that no longer exist — whoever installed them. The host runs every
+/// configured hook, so one such entry fails each session start or tool call
+/// with exit 127 (seen with a deleted temporary test binary in Codex's
+/// `hooks.json`). Only reported: an entry lean-ctx did not write is the
+/// user's to remove.
+pub(crate) fn missing_hook_programs(content: &str) -> Vec<String> {
+    fn program(command: &str) -> Option<&str> {
+        let command = command.trim_start();
+        let program = if let Some(rest) = command.strip_prefix('"') {
+            rest.split('"').next()?
+        } else if let Some(rest) = command.strip_prefix('\'') {
+            rest.split('\'').next()?
+        } else {
+            command.split_whitespace().next()?
+        };
+        let absolute = program.starts_with('/')
+            || (program.len() > 2
+                && program.as_bytes()[0].is_ascii_alphabetic()
+                && program.as_bytes()[1] == b':'
+                && matches!(program.as_bytes()[2], b'\\' | b'/'));
+        absolute.then_some(program)
     }
-    refs.into_iter().next()
+
+    fn collect(value: &serde_json::Value, missing: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(path) = object
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(program)
+                    && !std::path::Path::new(path).exists()
+                    && !missing.iter().any(|known| known == path)
+                {
+                    missing.push(path.to_string());
+                }
+                for child in object.values() {
+                    collect(child, missing);
+                }
+            }
+            serde_json::Value::Array(array) => {
+                for child in array {
+                    collect(child, missing);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut missing = Vec::new();
+    if let Ok(value) = crate::core::jsonc::parse_jsonc(content) {
+        collect(&value, &mut missing);
+    }
+    missing
 }
 
 pub(crate) fn check_rules_file(path: &std::path::Path) -> NamedCheck {

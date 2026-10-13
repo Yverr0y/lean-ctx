@@ -106,12 +106,26 @@ pub(crate) fn validate_claude_binary() -> Result<std::path::PathBuf, String> {
     } else {
         &["claude"]
     };
+    let home_dir = crate::core::home::resolve_home_dir();
+    let app_data = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
+    // PATH first, as a shell resolves `claude`; then the official installers'
+    // default locations, for a terminal or editor whose PATH predates the install.
     let path = find_first_in_path(names)
-        .ok_or_else(|| format!("{} not found in PATH", names.join(" or ")))?;
+        .or_else(|| {
+            default_install_candidates(home_dir.as_deref(), app_data.as_deref())
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+        })
+        .ok_or_else(|| {
+            format!(
+                "{} not found in PATH or the default install locations",
+                names.join(" or ")
+            )
+        })?;
 
     let canonical =
         std::fs::canonicalize(&path).map_err(|e| format!("cannot resolve claude path: {e}"))?;
-    let home = crate::core::home::resolve_home_dir().and_then(|h| std::fs::canonicalize(h).ok());
+    let home = home_dir.and_then(|h| std::fs::canonicalize(h).ok());
 
     if !is_trusted_claude_path(&canonical, home.as_deref())
         && std::env::var("LEAN_CTX_TRUST_CLAUDE_PATH").as_deref() != Ok("1")
@@ -122,6 +136,28 @@ pub(crate) fn validate_claude_binary() -> Result<std::path::PathBuf, String> {
         ));
     }
     Ok(canonical)
+}
+
+/// Where the official installers put `claude` when PATH does not show it: the
+/// native installer's `~/.local/bin`, and on Windows npm's default global
+/// prefix `%APPDATA%\npm`. Every candidate still passes the trust check.
+fn default_install_candidates(
+    home: Option<&std::path::Path>,
+    app_data: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let native = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    let mut candidates: Vec<_> = home
+        .map(|home| home.join(".local").join("bin").join(native))
+        .into_iter()
+        .collect();
+    if cfg!(windows) {
+        candidates.extend(app_data.map(|dir| dir.join("npm").join("claude.cmd")));
+    }
+    candidates
 }
 
 /// Install locations of genuine Claude Code builds, matched by path
@@ -290,5 +326,38 @@ mod trust_tests {
             found.as_deref(),
             Some(first.path().join("tool.cmd").as_path())
         );
+    }
+
+    /// A terminal or editor started before Claude Code was installed has no
+    /// PATH entry for it; the installers' default locations still find it.
+    #[test]
+    fn default_locations_cover_the_native_installer_and_npm_on_windows() {
+        let home = std::path::Path::new("/h");
+        let app_data = std::path::Path::new("/h/AppData/Roaming");
+        let candidates = super::default_install_candidates(Some(home), Some(app_data));
+        if cfg!(windows) {
+            assert_eq!(
+                candidates,
+                vec![
+                    home.join(".local").join("bin").join("claude.exe"),
+                    app_data.join("npm").join("claude.cmd"),
+                ]
+            );
+        } else {
+            assert_eq!(
+                candidates,
+                vec![home.join(".local").join("bin").join("claude")]
+            );
+        }
+        assert!(super::default_install_candidates(None, None).is_empty());
+        // Each one sits under a trusted root, so the trust check still applies
+        // rather than being bypassed.
+        for candidate in &candidates {
+            assert!(
+                super::is_trusted_claude_path(candidate, Some(home)),
+                "{}",
+                candidate.display()
+            );
+        }
     }
 }

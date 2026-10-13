@@ -196,6 +196,110 @@ fn hook_binary_refs_handles_minified_json() {
     assert_eq!(hook_binary_refs(content), vec!["lean-ctx", "lean-ctx"]);
 }
 
+// The reported Codex SessionStart failure: an extra entry ran a deleted
+// temporary test binary (exit 127). Its name is not `lean-ctx`, so neither the
+// stale-binary check nor setup touch it; doctor must still name it.
+#[test]
+fn hooks_running_a_deleted_program_are_reported_whoever_wrote_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let present = dir.path().join("lean-ctx");
+    std::fs::write(&present, "").unwrap();
+    let gone = dir.path().join("leanctx-pro-hint-latency-r1/engine-5a87");
+    let content = serde_json::json!({
+        "hooks": {
+            "SessionStart": [{
+                "matcher": "startup|resume|clear",
+                "hooks": [
+                    {"command": format!("{} hook codex-session-start", present.display())},
+                    {"command": format!("{} hook codex-session-start", gone.display())},
+                    {"command": format!("\"{}\" --flag", gone.display())},
+                    {"command": "lean-ctx hook observe"},
+                    {"command": "echo /missing/but/an/argument"}
+                ]
+            }]
+        }
+    })
+    .to_string();
+    assert_eq!(
+        missing_hook_programs(&content),
+        vec![gone.display().to_string()]
+    );
+
+    let healthy = NamedCheck {
+        name: "Codex hooks.json".to_string(),
+        ok: true,
+        detail: "ok".to_string(),
+    };
+    let checked = with_missing_programs(healthy, std::path::Path::new("/h/hooks.json"), &content);
+    assert!(!checked.ok);
+    assert!(checked.detail.contains("engine-5a87"), "{}", checked.detail);
+    assert!(
+        checked.detail.contains("/h/hooks.json"),
+        "{}",
+        checked.detail
+    );
+}
+
+#[test]
+fn quoted_windows_drive_paths_count_as_absolute_programs() {
+    let content = serde_json::json!({
+        "hooks": {"PreToolUse": [{"hooks": [
+            {"command": r#""Z:\nowhere\lean ctx\engine.exe" hook codex-pretooluse"#}
+        ]}]}
+    })
+    .to_string();
+    assert_eq!(
+        missing_hook_programs(&content),
+        vec![r"Z:\nowhere\lean ctx\engine.exe".to_string()]
+    );
+}
+
+#[test]
+fn quoted_windows_hook_paths_keep_the_complete_binary() {
+    let binary = r"C:\Program Files\LeanCTX\lean-ctx.exe";
+    let command = format!("\"{binary}\" hook codex-session-start");
+    let json = serde_json::to_string(&serde_json::json!({ "command": command })).unwrap();
+    assert_eq!(hook_binary_refs(&json), vec![binary]);
+    assert!(stale_hook_binary(&json, binary).is_none());
+    assert_eq!(hook_binary_refs(&command), vec![binary]);
+}
+
+#[test]
+fn custom_binary_with_a_codex_operation_is_not_lean_ctx_owned() {
+    for operation in [
+        "codex-pretooluse",
+        "codex-pretooluse-custom",
+        "codex-session-start",
+    ] {
+        let json = serde_json::to_string(&serde_json::json!({
+            "command": format!("/custom/guard hook {operation}")
+        }))
+        .unwrap();
+        assert!(hook_binary_refs(&json).is_empty());
+    }
+}
+
+#[test]
+fn raw_shell_mentions_are_not_hook_binary_references() {
+    for command in [
+        "echo /old/lean-ctx hook rewrite",
+        "\"echo\" \"/old/lean-ctx\" hook codex-session-start",
+        "/custom/lean-ctx-wrapper hook rewrite",
+    ] {
+        assert!(hook_binary_refs(command).is_empty(), "{command}");
+    }
+}
+
+#[test]
+fn nested_description_strings_are_not_hook_commands() {
+    let content = serde_json::json!({
+        "notes": ["/old/lean-ctx hook rewrite"],
+        "hooks": [{"command": "/current/lean-ctx hook codex-session-start"}]
+    })
+    .to_string();
+    assert_eq!(hook_binary_refs(&content), vec!["/current/lean-ctx"]);
+}
+
 #[test]
 fn stale_hook_binary_accepts_minified_bare_command() {
     let content = r#"[{"hooks":[{"command":"lean-ctx hook rewrite"}]}]"#;
@@ -223,6 +327,30 @@ fn stale_hook_binary_accepts_current_binary() {
     let bin = "/current/install/lean-ctx";
     let content = format!(r#""{bin} hook rewrite""#);
     assert!(stale_hook_binary(&content, bin).is_none());
+}
+
+#[test]
+fn stale_codex_hook_is_not_hidden_by_a_current_hook() {
+    let binary = "/current/install/lean-ctx";
+    let stale = "/private/tmp/leanctx-check/lean-ctx";
+    for commands in [
+        vec![
+            format!("{binary} hook codex-session-start"),
+            format!("{stale} hook codex-session-start"),
+        ],
+        vec![
+            format!("{stale} hook codex-pretooluse"),
+            format!("{binary} hook codex-pretooluse"),
+        ],
+    ] {
+        let content = serde_json::to_string(&serde_json::json!({
+            "hooks": commands.into_iter().map(|command| {
+                serde_json::json!({ "command": command })
+            }).collect::<Vec<_>>()
+        }))
+        .unwrap();
+        assert_eq!(stale_hook_binary(&content, binary).as_deref(), Some(stale));
+    }
 }
 
 #[test]
