@@ -31,6 +31,7 @@ Top-level configuration keys
 - `content_defined_chunking` (bool, default `false`) — Enable Rabin-Karp chunking for cache-optimal output ordering
 - `crush_verbatim_json` (bool, default `false` — env `LEAN_CTX_CRUSH_VERBATIM_JSON`) — Opt-in: losslessly crush array-heavy JSON from verbatim data commands (gh api, jq, kubectl get -o json, curl). Off by default keeps them verbatim. Reshapes only when it at least halves the payload; fully reconstructible
 - `custom_aliases` (array, default `[]`) — Custom command aliases (array of {command, alias} entries)
+- `daemon_max_rss_mb` (u64, default `2048` — env `LEAN_CTX_DAEMON_MAX_RSS_MB`) — Process RSS target (MB) of the background daemon; the guardian evicts above the lower of this and max_ram_percent (default 2048, 0 = percent only)
 - `dashboard_auth` (bool, default `true`) — Require Bearer-token auth for the dashboard (default true). Set false for no-auth mode protected by Sec-Fetch-Site/Origin/Host checks. Override per-run with --no-auth or LEAN_CTX_DASHBOARD_AUTH
 - `debug_log` (bool, default `false` — env `LEAN_CTX_DEBUG_LOG`) — Opt-in (default off): write a human-readable debug log of intercepted MCP tool calls and hook routing decisions (lean-ctx vs native, with the reason) to <state_dir>/logs/debug.log. View with `lean-ctx debug-log`
 - `default_tool_categories` (string[], default `[]`) — Tool categories active by default. `core` is the default; `session` enables experimental local collaboration tools only when explicitly listed. Override via LCTX_DEFAULT_CATEGORIES

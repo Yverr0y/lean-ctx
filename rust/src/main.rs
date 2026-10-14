@@ -16,6 +16,10 @@
 pub static malloc_conf: &[u8] = lean_ctx::JEMALLOC_CONF;
 
 fn main() {
+    // First, before any parser exists: tree-sitter allocations made by one
+    // allocator must never be freed by the other (#2075).
+    lean_ctx::core::memory_guard::route_tree_sitter_to_jemalloc();
+
     // Seal the inherited capability before the TCC guard can spawn a probe or
     // re-exec. An orphaned bootstrap may fail closed; its FD must not reach a
     // helper started before the normal CLI receiver takes ownership.

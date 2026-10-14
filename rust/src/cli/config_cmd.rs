@@ -1128,6 +1128,10 @@ max_ram_percent = 5
 # max_ram_percent applies (0 = percent only).
 # mcp_max_rss_mb = 512
 
+# Process RSS target (MB) of the background daemon; the lower of this and
+# max_ram_percent applies (0 = percent only).
+# daemon_max_rss_mb = 2048
+
 # Exit a stdio MCP server after N minutes without a tool call (0 = never).
 # Codex does not restart exited servers, so leave this off for Codex.
 # mcp_idle_exit_minutes = 0
@@ -1191,6 +1195,11 @@ fn cmd_show_effective() {
         " mcp_max_rss_mb      = {:10}  {}",
         cfg.mcp_max_rss_mb_effective(),
         source_hint("LEAN_CTX_MCP_MAX_RSS_MB", cfg.mcp_max_rss_mb != 512)
+    ));
+    box_row(&format!(
+        " daemon_max_rss_mb   = {:10}  {}",
+        cfg.daemon_max_rss_mb_effective(),
+        source_hint("LEAN_CTX_DAEMON_MAX_RSS_MB", cfg.daemon_max_rss_mb != 2048)
     ));
     box_row(&format!(
         " mcp_idle_exit_minutes = {:8}  {}",

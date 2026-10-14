@@ -362,6 +362,7 @@ impl LeanCtxServer {
                 memory_guard::PressureLevel::Hard,
             );
             memory_guard::jemalloc_purge();
+            memory_guard::release_system_heap();
         })
         .await;
         let after = (

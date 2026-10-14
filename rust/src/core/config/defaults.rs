@@ -164,6 +164,7 @@ impl Default for Config {
             semantic_mode: SemanticMode::default(),
             max_ram_percent: serde_defaults::default_max_ram_percent(),
             mcp_max_rss_mb: serde_defaults::default_mcp_max_rss_mb(),
+            daemon_max_rss_mb: serde_defaults::default_daemon_max_rss_mb(),
             mcp_idle_exit_minutes: 0,
             max_disk_mb: 0,
             max_staleness_days: 0,
