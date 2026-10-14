@@ -7,16 +7,24 @@
 //! lenient in the first case, too strict in the second.
 //!
 //! Only a plain `cd <literal>` segment is followed, and only where it is
-//! certain to have run before the next command (#1850). Everything else that
-//! can move the shell — a variable, a substitution, `pushd`/`popd`, a `cd`
+//! certain to have run before the next command (#1850). A target spelled
+//! through a variable is followed when that variable is known — `$TMPDIR`, or
+//! one this same command set to a literal (#2079, `command_vars`). Everything
+//! else that can move the shell — any other variable, a substitution,
+//! `pushd`/`popd`, a `cd`
 //! inside a subshell, a brace group, a loop or a function, a `cd` that may be
 //! skipped (`a || cd x`) or may fail (`cd missing; …`) — leaves the directory
 //! unknown, and an unknown directory is reported as such rather than guessed
 //! at. The write guard relies on that: judging a later command against a
 //! directory it does not run in is how a redirect lands in the project.
+//!
+//! Quoted text is data: `printf '… cd /tmp …' > f` does not move anything
+//! (#2081). The exception is `eval`, which runs text in this shell, so any
+//! `eval` leaves the directory unknown.
 
 use std::path::{Path, PathBuf};
 
+use super::command_vars::{KnownVars, expand_leading_variable, literal_assignments_before_each};
 use super::shell_allowlist::Separator;
 
 /// One command segment together with the directory it runs in.
@@ -64,6 +72,7 @@ impl Pending {
 
 fn track(command: &str, base: Option<&Path>) -> (Vec<SegmentCwd>, Option<PathBuf>) {
     let segments = super::shell_allowlist::segments_with_separators(command);
+    let vars = literal_assignments_before_each(&segments);
     // `CDPATH` reroutes a relative `cd sub` to wherever it finds `sub` first.
     let cdpath = std::env::var_os("CDPATH").is_some_and(|v| !v.is_empty())
         || segments.iter().any(|(s, _)| s.contains("CDPATH"));
@@ -77,7 +86,7 @@ fn track(command: &str, base: Option<&Path>) -> (Vec<SegmentCwd>, Option<PathBuf
     let mut prev: Option<Separator> = None;
     let mut out = Vec::with_capacity(segments.len());
 
-    for (segment, sep) in segments {
+    for ((segment, sep), vars) in segments.into_iter().zip(vars) {
         // Every segment runs where it starts — a `cd` included: its own
         // redirect is opened before it moves, and a failed `cd` stays put.
         let here = cwd.clone();
@@ -98,7 +107,7 @@ fn track(command: &str, base: Option<&Path>) -> (Vec<SegmentCwd>, Option<PathBuf
             let moved = if cdpath && is_cdpath_candidate(target) {
                 None
             } else {
-                resolve_cd(here.as_deref(), target)
+                resolve_cd(here.as_deref(), target, &vars)
             };
             // With an uncertain `cd` still open (`cd a && cd b`), not taking
             // this one leaves the shell in `a` *or* where `a` started.
@@ -197,10 +206,76 @@ fn is_cdpath_candidate(target: &str) -> bool {
 /// directory: `pushd`, `popd`, `cd` after `do`/`then`/`builtin`/`command`, or
 /// any of them inside a subshell, brace group, substitution or function body.
 /// Deliberately broad — a false positive only makes the directory unknown.
+///
+/// Only words the shell runs count (#2081): `printf 'cd /tmp' > f` prints the
+/// words, it does not run them. Two scans together cover that:
+///
+/// - the segment with its quoted text blanked, split at whitespace and
+///   operators — this sees `{ cd x; }`, `${ cd x; }`, `do cd x`;
+/// - the shell's own words, quotes removed, split only at operators — this sees
+///   a quoted command name (`"cd" x`, `c'd' x`), which still runs.
+///
+/// A substitution inside double quotes (`"$(cd x)"`) runs in a subshell and
+/// cannot move this one. `eval` runs arbitrary text in this shell, so any
+/// `eval` makes the directory unknown.
 fn moves_opaquely(segment: &str) -> bool {
-    segment
-        .split(|c: char| c.is_whitespace() || "(){};&|`".contains(c))
-        .any(|word| matches!(word, "cd" | "pushd" | "popd" | "chdir"))
+    const MOVERS: [&str; 4] = ["cd", "pushd", "popd", "chdir"];
+    let split_words = |text: &str| -> Vec<String> {
+        text.split(|c: char| c.is_whitespace() || OPERATORS.contains(c))
+            .map(str::to_string)
+            .collect()
+    };
+    let mut words = split_words(&blank_quoted(segment));
+    words.extend(
+        super::shell_allowlist::shell_tokenize(segment)
+            .iter()
+            .flat_map(|token| token.split(|c: char| OPERATORS.contains(c)))
+            .map(str::to_string),
+    );
+    words
+        .iter()
+        .any(|w| w == "eval" || MOVERS.contains(&w.as_str()))
+}
+
+/// Characters that end a shell word besides whitespace.
+const OPERATORS: &str = "(){};&|`";
+
+/// `segment` with every quoted character — quotes included — replaced by a
+/// space, so a word scan sees only what is not quoted. A backslash escapes the
+/// next character outside single quotes, as in the shell.
+fn blank_quoted(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    let mut chars = segment.chars();
+    let mut single = false;
+    let mut double = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if !single => {
+                // Consumed here, the escaped character never toggles a quote.
+                let next = chars.next();
+                if double {
+                    out.push(' ');
+                    if next.is_some() {
+                        out.push(' ');
+                    }
+                } else {
+                    out.push(c);
+                    out.extend(next);
+                }
+            }
+            '\'' if !double => {
+                single = !single;
+                out.push(' ');
+            }
+            '"' if !single => {
+                double = !double;
+                out.push(' ');
+            }
+            _ if single || double => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// The literal argument of a segment that is exactly `cd <path>`.
@@ -222,8 +297,19 @@ fn cd_target(segment: &str) -> Option<&str> {
 /// `cd` with no resolvable target is not "stay here": it moves somewhere this
 /// cannot see. Returning `None` keeps callers from judging a later segment
 /// against a directory it does not run in.
-fn resolve_cd(from: Option<&Path>, target: &str) -> Option<PathBuf> {
+///
+/// A target that starts with a known variable (`cd $TMPDIR/x`, `D=/tmp/x; cd
+/// "$D"`) is followed like its literal value (#2079). Inside single quotes `$`
+/// is a literal character, and any other variable is unknown.
+fn resolve_cd(from: Option<&Path>, target: &str, vars: &KnownVars) -> Option<PathBuf> {
     let unquoted = target.trim_matches(['"', '\'']);
+    let expanded;
+    let unquoted = if unquoted.starts_with('$') && !target.starts_with('\'') {
+        expanded = expand_leading_variable(unquoted, vars)?;
+        expanded.as_str()
+    } else {
+        unquoted
+    };
     if unquoted.is_empty() || unquoted.contains('$') || unquoted.contains('`') || unquoted == "-" {
         return None;
     }
@@ -338,7 +424,10 @@ mod tests {
     #[test]
     fn an_unresolvable_cd_makes_the_directory_unknown() {
         assert_eq!(
-            final_cwd("cd \"$TMPDIR\" && ls", Some(Path::new("/proj"))),
+            final_cwd(
+                "cd \"$LEAN_CTX_2079_NEVER_SET\" && ls",
+                Some(Path::new("/proj"))
+            ),
             None
         );
         assert_eq!(final_cwd("cd - && ls", Some(Path::new("/proj"))), None);
@@ -449,5 +538,86 @@ mod tests {
             Some(PathBuf::from("/proj/sub")),
             "`./` bypasses CDPATH"
         );
+    }
+
+    /// #2081: quoted text is data. The reporter's form: a log line that
+    /// mentions `cd $TMPDIR`, written with a relative redirect.
+    #[test]
+    fn a_cd_inside_a_quoted_argument_does_not_move_anything() {
+        for command in [
+            "printf '%s\\n' 'note: cd /tmp mention' > f.txt",
+            "cd /proj && printf '| %s | (cd $TMPDIR not followed) |\\n' x >> f.txt",
+            "echo \"pushd here, popd there, then cd back\" > f.txt",
+            "echo \"$(cd /tmp; pwd)\" > f.txt",
+            "echo 'it'\\''s cd' > f.txt",
+        ] {
+            assert_eq!(
+                cwds(command).last(),
+                Some(&Some(PathBuf::from("/proj"))),
+                "{command}"
+            );
+        }
+    }
+
+    /// Quoting the command name does not stop the shell running it, and `eval`
+    /// runs text in this shell: those still leave the directory unknown.
+    #[test]
+    fn a_quoted_command_name_or_eval_still_moves_the_shell() {
+        for command in [
+            "\"cd\" /tmp && echo x",
+            "c'd' /tmp && echo x",
+            "\\cd /tmp && echo x",
+            "builtin 'cd' /tmp && echo x",
+            "eval 'cd /tmp' && echo x",
+            "'eval' \"c\"\"d /tmp\" && echo x",
+            "echo ${ cd /tmp; } && echo x",
+        ] {
+            assert_eq!(cwds(command).last(), Some(&None), "{command}");
+        }
+    }
+
+    /// #2079: a `cd` through a variable this command set to a literal, or
+    /// through `$TMPDIR`, is followed like the literal.
+    #[test]
+    fn a_cd_through_a_known_variable_is_followed() {
+        assert_eq!(
+            cwds("D=/tmp && cd $D && echo x").last(),
+            Some(&Some(PathBuf::from("/tmp")))
+        );
+        assert_eq!(
+            cwds("D=/tmp; cd \"${D}/sub\" && echo x").last(),
+            Some(&Some(PathBuf::from("/tmp/sub")))
+        );
+        assert_eq!(
+            cwds("D=sub; cd $D && echo x").last(),
+            Some(&Some(PathBuf::from("/proj/sub"))),
+            "a relative value is joined like a relative literal"
+        );
+        let expected = std::env::var("TMPDIR")
+            .ok()
+            .filter(|t| !t.is_empty() && !t.contains(['$', '`']))
+            .map(|t| resolve_cd(None, &t, &KnownVars::default()));
+        assert_eq!(
+            final_cwd("cd $TMPDIR && ls", Some(Path::new("/proj"))),
+            expected.flatten(),
+            "$TMPDIR resolves exactly as its value spelled out"
+        );
+    }
+
+    /// Anything the variable resolution cannot vouch for stays unknown.
+    #[test]
+    fn a_cd_through_an_unknown_variable_stays_unknown() {
+        for command in [
+            "cd $D && echo x",
+            "true && D=/tmp; cd $D && echo x",
+            "D=/tmp; read D; cd $D && echo x",
+            "TMPDIR=$PWD; cd $TMPDIR && echo x",
+            "unset TMPDIR; cd $TMPDIR && echo x",
+            // Inside single quotes `$D` is the literal name of a directory.
+            "D=/tmp; cd '$D' && echo x",
+            "D=/tmp; cd $Dx && echo x",
+        ] {
+            assert_eq!(cwds(command).last(), Some(&None), "{command}");
+        }
     }
 }
