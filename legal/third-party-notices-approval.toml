@@ -1,5 +1,5 @@
 schema = "leanctx.third-party-notices-approval/v1"
-approved_content_sha256 = "5e3e5424e85871d4f84086b527f0f89f23cf2d42457a7ad7d1cef712b26dec0d"
+approved_content_sha256 = "971b0fb378beb48d2a7fcd0e121ddd24541c3f50bb8960e713c4b6e7d07e18ee"
 approving_owner = "Yves Gugger"
-approval_evidence = "Copyright owner approval of the generated THIRD_PARTY_NOTICES (GENERATED AND APPROVED variant of scripts/generate-third-party-notices.py) for the quinn-proto 0.11.16 -> 0.11.19 security bump (RUSTSEC-2026-0338..0342): only the quinn-proto version and the Cargo.lock, SBOM and asset-manifest digests change; no license or notice text changes."
-approved_at = "2026-10-13"
+approval_evidence = "Copyright owner approval of the generated THIRD_PARTY_NOTICES (GENERATED AND APPROVED variant of scripts/generate-third-party-notices.py) for the rustls 0.23.45 -> 0.23.46 security bump (RUSTSEC-2026-0346, RUSTSEC-2026-0348, RUSTSEC-2026-0349): only the rustls version and the Cargo.lock, SBOM and asset-manifest digests change; no license or notice text changes."
+approved_at = "2026-10-14"

@@ -2,15 +2,15 @@
 Schema: leanctx.third-party-notices/v1
 Status: GENERATED AND APPROVED
 Content-Digest-Scope: SHA-256 of this file with the Content-Digest value zeroed
-Content-Digest: sha256:38a71be5fd2a5dd4d234c1bab28cb4407e70c88bed987ca1304fe62ef351a095
+Content-Digest: sha256:92ec2292beb4a03ef9114f28e10cb4d0cea06535745eb4b635581eda8067f97b
 Source inventory: rust/Cargo.lock + cargo metadata --locked --offline --all-features + SBOM.cdx.json + legal/third-party-assets.toml + packages/pi-lean-ctx/package-lock.json
 Generation command: cargo metadata --locked --offline --all-features --manifest-path rust/Cargo.toml --format-version 1
 Approval contract: legal/third-party-notices-approval.toml binds approved_content_sha256 to this file's exact SHA-256
-Cargo.lock SHA-256: b42f0143325c52c42c601f472a2f21f5e9d7d1e5883052cc4745c9da2883d432
-Cargo metadata inventory SHA-256: 66a42ada9f8fd5fa39fe0f2ae171d3471dc0034667403a17b8589fa6e55561d2
-SBOM.cdx.json SHA-256: 05595d7a5642f7463fc50ff8cc32b4bb722c23e795433f7f522e459ddfdcba55
+Cargo.lock SHA-256: 0ec5dfcb060f102cf34e9017b1e21ad073082903d9b794a0cb3272645b4dbbd1
+Cargo metadata inventory SHA-256: 1393d066164ec084955dc746f1fdcd8557e15d5814c77f90a472cae459c58d36
+SBOM.cdx.json SHA-256: 53d31e4b08b708f8b21f70cacfd347dd4808d0106014f4ed4f3f90c1290cd72e
 SBOM components: 540
-Asset manifest SHA-256: 2f843cde60668647485c0539c131d6de5f85e48062e8338788dbb35e486e61c1
+Asset manifest SHA-256: 165b802a5f7ec82346c0be7197840a963517701264f747ae02a19bcc263aa540
 npm package-lock.json SHA-256: df993605fd30412428c0ac5ab7b8caaee9b4ad5e49ff069cc07939fd705fd5a4
 Bundled MCP SDK: @modelcontextprotocol/sdk 1.32.1 (sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw==)
 Cargo graph packages: 594
@@ -2745,7 +2745,7 @@ Targets: build-script-build[custom-build], mod[bench], rustix[lib]
 Features: all-apis, alloc, core, default, event, fs, io_uring, libc, libc_errno, linux_4_11, linux_5_1, linux_5_11, linux_latest, mm, mount, net, param, pipe, process, pty, rand, runtime, rustc-dep-of-std, rustc-std-workspace-alloc, shm, std, stdio, system, termios, thread, time, try_close, use-explicitly-provided-auxv, use-libc, use-libc-auxv
 Dependencies: bitflags, errno, libc, linux-raw-sys, windows-sys
 
-### rustls 0.23.45
+### rustls 0.23.46
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/rustls/rustls
 SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
