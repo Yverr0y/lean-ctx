@@ -768,8 +768,9 @@ fn registered_cache_root_reads_allow_writes_deny() {
 }
 
 /// Agent instruction files (skills, commands, rules, global instruction
-/// files) below `~` are auto-admitted read-only; the credentials beside them,
-/// `..` tricks and same-named folders elsewhere are not.
+/// files) and the agents' own settings/MCP configs below `~` are auto-admitted
+/// read-only; the credentials beside them, `..` tricks and same-named folders
+/// elsewhere are not.
 #[test]
 fn agent_instruction_roots_are_admitted_but_credentials_stay_jailed() {
     let home = dirs::home_dir().expect("home dir in test env");
@@ -779,6 +780,9 @@ fn agent_instruction_roots_are_admitted_but_credentials_stay_jailed() {
         (".claude/CLAUDE.md", ".claude/CLAUDE.md"),
         (".agents/skills/a/SKILL.md", ".agents/skills"),
         (".cursor/rules/style.mdc", ".cursor/rules"),
+        (".claude/settings.json", ".claude/settings.json"),
+        (".codex/config.toml", ".codex/config.toml"),
+        (".cursor/mcp.json", ".cursor/mcp.json"),
     ] {
         let (_, detected) = detect_language_cache_root(&home.join(inside))
             .unwrap_or_else(|| panic!("{inside} must be admitted"));
@@ -790,8 +794,11 @@ fn agent_instruction_roots_are_admitted_but_credentials_stay_jailed() {
     }
     for private in [
         ".claude/.credentials.json",
-        ".claude/settings.json",
+        ".claude.json",
+        ".claude/settings.json.bak",
         ".codex/auth.json",
+        ".codex/sessions/2026/x.jsonl",
+        ".codex/config.toml/../auth.json",
         ".claude/skills/../.credentials.json",
         ".claude/projects/p/transcript.jsonl",
     ] {

@@ -12,6 +12,57 @@ fn project() -> (tempfile::TempDir, PathBuf) {
 }
 
 #[test]
+fn only_a_busy_or_late_worker_is_asked_twice() {
+    let verified = || {
+        Ok(refresh::VerifiedPolicy {
+            policy: None,
+            fingerprint: blake3::hash(b"snapshot"),
+        })
+    };
+    for transient in [
+        "policy refresh is unavailable or busy",
+        "policy refresh deadline exceeded",
+    ] {
+        let mut calls = 0;
+        let answer = refresh::settled(|| {
+            calls += 1;
+            if calls == 1 {
+                Err(transient.to_string())
+            } else {
+                verified()
+            }
+        });
+        assert_eq!(calls, 2, "{transient}");
+        assert_eq!(answer.unwrap().fingerprint, blake3::hash(b"snapshot"));
+    }
+    // A real policy failure is final: no second look can turn it into a pass.
+    for final_error in [
+        "project policy is invalid",
+        "org policy verification failed",
+    ] {
+        let mut calls = 0;
+        let answer = refresh::settled(|| {
+            calls += 1;
+            if calls == 1 {
+                Err(final_error.to_string())
+            } else {
+                verified()
+            }
+        });
+        assert_eq!(calls, 1, "{final_error}");
+        assert_eq!(answer.err().as_deref(), Some(final_error));
+    }
+    // A worker that stays busy fails closed after the one repeat.
+    let mut calls = 0;
+    let answer = refresh::settled(|| {
+        calls += 1;
+        Err("policy refresh is unavailable or busy".to_string())
+    });
+    assert_eq!(calls, 2);
+    assert!(answer.is_err());
+}
+
+#[test]
 fn exact_bytes_reuse_compilation_and_changed_bytes_revoke_without_reload() {
     let _isolation = crate::core::data_dir::isolated_data_dir();
     let (root, path) = project();

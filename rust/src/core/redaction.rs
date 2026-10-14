@@ -378,7 +378,7 @@ fn redaction_rules() -> Vec<Rule> {
             // Any token-character credential, however short: `Basic dTpw` (u:p) is
             // four characters. Token characters only, so adjacent text survives.
             re: static_regex!(
-                r"(?i)(authorization:[ \t]*(?:basic|bearer|token)[ \t]+)([A-Za-z0-9._~+/=-]+)"
+                r"(?i)(authorization[ \t]*:[ \t]*(?:basic|bearer|token)[ \t]+)([A-Za-z0-9._~+/=-]+)"
             ),
             guard_value: false,
         },
@@ -502,6 +502,29 @@ pub(crate) fn redact_text_with_excludes_for_detection(
 }
 
 /// [`redact_text_with_excludes`] plus the number of secrets it replaced.
+/// Database URL with inline credentials: scheme (1), user (2, may be empty —
+/// `redis://:pw@host`), password (3), host (4). The password runs to the last
+/// `@` before the host, so an unencoded `@` in it cannot leak a tail. Shared
+/// with the detector so both layers agree on what a credential is.
+pub(crate) fn database_url_re() -> &'static regex::Regex {
+    static_regex!(
+        r"(?i)((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://)([^:/@?#\s]*):([^/?#\s]+)@([^@/?#\s]+)"
+    )
+}
+
+/// True when a [`database_url_re`] match carries a real credential. A
+/// placeholder password is not one, and neither is an already redacted
+/// `scheme://[REDACTED:db_url]@host` — its `:` would otherwise read as
+/// `user:password`, so a re-scan of redacted output found a "residual" secret
+/// and the context gateway withheld the whole file.
+pub(crate) fn database_url_has_credential(caps: &regex::Captures) -> bool {
+    caps.get(2)
+        .is_none_or(|user| !user.as_str().starts_with("[REDACTED"))
+        && caps
+            .get(3)
+            .is_some_and(|password| !is_placeholder_value(password.as_str()))
+}
+
 fn redact_counting(input: &str, excludes: &[regex::Regex]) -> (String, usize) {
     redact_counting_with_labels(input, excludes, false)
 }
@@ -514,10 +537,7 @@ fn redact_counting_with_labels(
     let (normalized, boundaries) = normalize_for_secret_matching(input);
     let mut replacements = Vec::new();
 
-    let database_re = static_regex!(
-        r"(?i)((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://)([^:/@?#\s]+):([^@/?#\s]+)@([^/?#\s]+)"
-    );
-    for caps in database_re.captures_iter(&normalized) {
+    for caps in database_url_re().captures_iter(&normalized) {
         let Some(whole) = caps.get(0) else {
             continue;
         };
@@ -527,10 +547,7 @@ fn redact_counting_with_labels(
         if excluded(excludes, whole.as_str()) || excluded(excludes, original) {
             continue;
         }
-        if caps
-            .get(3)
-            .is_some_and(|password| is_placeholder_value(password.as_str()))
-        {
+        if !database_url_has_credential(&caps) {
             continue;
         }
         let scheme = caps

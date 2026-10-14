@@ -202,7 +202,7 @@ pub(crate) fn with_source_view<T>(operation: impl FnOnce() -> T) -> Result<T, St
         .or_else(|| std::env::current_dir().ok())
         .ok_or("policy project root unavailable")?;
     REQUEST_PROJECT.sync_scope(std::cell::RefCell::new(Some(project.clone())), || {
-        let verified = refresh::current_verified(project.clone())?;
+        let verified = refresh::current_verified_settled(&project)?;
         let role = crate::core::roles::active_role();
         let pinned_role_fingerprint = role_fingerprint(&role)?;
         let view = SourceView {
@@ -226,7 +226,7 @@ pub(crate) fn with_source_view<T>(operation: impl FnOnce() -> T) -> Result<T, St
             .unwrap_or(false);
         let latest_role = crate::core::roles::active_role();
         let latest_role_fingerprint = role_fingerprint(&latest_role)?;
-        let latest = refresh::current_verified(project)?;
+        let latest = refresh::current_verified_settled(&project)?;
         if !project_unchanged
             || latest.fingerprint != view.fingerprint
             || latest_role_fingerprint != view.role_fingerprint

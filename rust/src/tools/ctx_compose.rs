@@ -499,10 +499,12 @@ pub fn handle(task: &str, project_root: &str, crp_mode: CrpMode) -> (String, usi
     crate::core::policy::runtime::with_project_source_view(project_root, || {
         handle_in_view(task, project_root, crp_mode)
     })
-    .unwrap_or_else(|_| {
+    .unwrap_or_else(|reason| {
         (
-            "ERROR: context withheld: source authority changed or could not be verified"
-                .to_string(),
+            format!(
+                "ERROR: context withheld: source authority changed or could not be verified \
+                 ({reason})"
+            ),
             0,
         )
     })
