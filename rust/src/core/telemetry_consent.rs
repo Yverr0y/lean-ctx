@@ -20,6 +20,7 @@ pub const DISCLOSURE: &[&str] = &[
     "daily counts of the LeanCTX commands and background features you use (for example `pack export` or an index build) and how many failed, never their arguments",
     "your daily usage record (as `lean-ctx gain` shows it, last 90 days): operations and tokens before/after compression, lifetime totals, month of first use",
     "session counts and uptime (including MCP server starts that answered no tool call), error categories, version upgrades",
+    "how each session ended, as daily counts: no failed call, recovered from failed calls, or a tool whose last call failed (and whether that failure was on LeanCTX's side), plus how many calls retried a failed one",
     "aggregate autopilot, sync and plan events (counts only)",
 ];
 
@@ -28,8 +29,9 @@ pub const NEVER_SENT: &str = "No prompts, code, file names, paths, commands, raw
 
 /// Bump when [`DISCLOSURE`] gains a category, so existing installations see
 /// the notice again. 2: runtime environment, installation age, active days,
-/// per-tool latency and failure classes, daily usage history.
-const NOTICE_VERSION: u32 = 2;
+/// per-tool latency and failure classes, daily usage history. 3: session
+/// outcomes and retries.
+const NOTICE_VERSION: u32 = 3;
 
 /// Environment variables that mark a CI or build job. Each job usually starts
 /// from a fresh home and would report as a brand-new installation, so CI never

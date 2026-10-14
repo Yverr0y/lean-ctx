@@ -318,31 +318,70 @@ const MCP_SESSION: &str = "mcp.session";
 /// agent never uses LeanCTX. Counted, not hidden, so Ops can tell such starts
 /// from real sessions.
 const MCP_SESSION_EMPTY: &str = "mcp.session.empty";
+/// Every other ended session gets exactly one of three outcomes (3.11.5+):
+/// no tool call failed;
+const MCP_SESSION_CLEAN: &str = "mcp.session.clean";
+/// calls failed, but the last call of every tool succeeded;
+const MCP_SESSION_RECOVERED: &str = "mcp.session.recovered";
+/// the last call of some tool failed. Also counted as a failure when one of
+/// those last failures lies on LeanCTX's side rather than the caller's.
+const MCP_SESSION_UNRESOLVED: &str = "mcp.session.unresolved";
+/// Calls made right after a failed call of the same tool; a failure when the
+/// retry failed again.
+const MCP_SESSION_RETRY: &str = "mcp.session.retry";
 
 /// Counts an MCP server start after the handshake.
 pub fn record_mcp_session_start() {
     let _ = crate::core::telemetry_aggregate::record_feature(MCP_SESSION, true);
 }
 
-/// The code an ending MCP server adds, given its tool calls.
-fn mcp_session_end_code(tool_calls: u64) -> Option<&'static str> {
-    (tool_calls == 0).then_some(MCP_SESSION_EMPTY)
+/// A failure LeanCTX itself has to fix: a timeout, an unavailable
+/// dependency, a size limit or an unclassified error. Bad input, a missing
+/// file, a stale edit, a permission or a deliberate policy block are the
+/// caller's to resolve.
+fn leanctx_side(kind: crate::core::telemetry_failure::FailureKind) -> bool {
+    use crate::core::telemetry_failure::FailureKind;
+    matches!(
+        kind,
+        FailureKind::Timeout
+            | FailureKind::Unavailable
+            | FailureKind::TooLarge
+            | FailureKind::Other
+    )
 }
 
-/// Counts the end of an MCP server that answered no tool call. Every exit path
-/// (transport closed, parent gone, idle exit) calls this before its final
-/// send; only the first call of a process counts.
+/// The `(code, count, failures)` tallies an ending MCP server adds.
+fn mcp_session_end_tallies(
+    outcome: &crate::core::telemetry::SessionOutcome,
+) -> Vec<(&'static str, u64, u64)> {
+    if outcome.calls == 0 {
+        return vec![(MCP_SESSION_EMPTY, 1, 0)];
+    }
+    let ending = if outcome.failures == 0 {
+        (MCP_SESSION_CLEAN, 1, 0)
+    } else if outcome.unresolved.is_empty() {
+        (MCP_SESSION_RECOVERED, 1, 0)
+    } else {
+        let ours = outcome.unresolved.iter().any(|kind| leanctx_side(*kind));
+        (MCP_SESSION_UNRESOLVED, 1, u64::from(ours))
+    };
+    vec![
+        ending,
+        (MCP_SESSION_RETRY, outcome.retries, outcome.retry_failures),
+    ]
+}
+
+/// Counts how an MCP session ended. Every exit path (transport closed, parent
+/// gone, idle exit) calls this before its final send; only the first call of
+/// a process counts.
 pub fn record_mcp_session_end() {
     static ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if ENDED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    let tool_calls = crate::core::telemetry::global_metrics()
-        .tool_calls_total
-        .load(std::sync::atomic::Ordering::Relaxed);
-    if let Some(code) = mcp_session_end_code(tool_calls) {
-        let _ = crate::core::telemetry_aggregate::record_feature(code, true);
-    }
+    let outcome = crate::core::telemetry::global_metrics().session_outcome();
+    let _ =
+        crate::core::telemetry_aggregate::record_feature_counts(&mcp_session_end_tallies(&outcome));
 }
 
 #[cfg(test)]
@@ -449,7 +488,14 @@ mod tests {
                 feature.code()
             ));
         }
-        for code in [MCP_SESSION, MCP_SESSION_EMPTY] {
+        for code in [
+            MCP_SESSION,
+            MCP_SESSION_EMPTY,
+            MCP_SESSION_CLEAN,
+            MCP_SESSION_RECOVERED,
+            MCP_SESSION_UNRESOLVED,
+            MCP_SESSION_RETRY,
+        ] {
             assert!(
                 crate::core::telemetry_v2::valid_feature_code(code),
                 "{code}"
@@ -458,9 +504,56 @@ mod tests {
     }
 
     #[test]
-    fn only_a_session_without_tool_calls_is_marked_empty() {
-        assert_eq!(mcp_session_end_code(0), Some("mcp.session.empty"));
-        assert_eq!(mcp_session_end_code(1), None);
-        assert_eq!(mcp_session_end_code(u64::MAX), None);
+    fn every_ended_session_gets_exactly_one_outcome() {
+        use crate::core::telemetry::SessionOutcome;
+        use crate::core::telemetry_failure::FailureKind;
+        let outcome = |calls, failures, unresolved: Vec<FailureKind>| SessionOutcome {
+            calls,
+            failures,
+            unresolved,
+            retries: 0,
+            retry_failures: 0,
+        };
+        assert_eq!(
+            mcp_session_end_tallies(&outcome(0, 0, vec![])),
+            [("mcp.session.empty", 1, 0)]
+        );
+        assert_eq!(
+            mcp_session_end_tallies(&outcome(4, 0, vec![]))[0],
+            ("mcp.session.clean", 1, 0)
+        );
+        assert_eq!(
+            mcp_session_end_tallies(&outcome(4, 2, vec![]))[0],
+            ("mcp.session.recovered", 1, 0)
+        );
+        assert_eq!(
+            mcp_session_end_tallies(&outcome(4, 2, vec![FailureKind::NotFound]))[0],
+            ("mcp.session.unresolved", 1, 0),
+            "a missing file is the caller's to resolve"
+        );
+        assert_eq!(
+            mcp_session_end_tallies(&outcome(
+                4,
+                2,
+                vec![FailureKind::NotFound, FailureKind::Timeout]
+            ))[0],
+            ("mcp.session.unresolved", 1, 1),
+            "a timeout is LeanCTX's"
+        );
+    }
+
+    #[test]
+    fn retries_ride_along_with_the_outcome() {
+        let outcome = crate::core::telemetry::SessionOutcome {
+            calls: 9,
+            failures: 3,
+            unresolved: vec![],
+            retries: 3,
+            retry_failures: 1,
+        };
+        assert_eq!(
+            mcp_session_end_tallies(&outcome),
+            [("mcp.session.recovered", 1, 0), ("mcp.session.retry", 3, 1)]
+        );
     }
 }

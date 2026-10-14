@@ -132,6 +132,25 @@ Tageszähler der genutzten LeanCTX-Befehle und Hintergrundfunktionen.
 
 Höchstens 96 Codes je Tag, aufsteigend sortiert.
 
+MCP-Sessions (ein MCP-Serverprozess = eine Agenten-Session) zählen über
+dieselben Codes, nur als Tagessummen, ohne Session-Kennung:
+
+| Code | `count` | `failures` |
+|---|---|---|
+| `mcp.session` | Sessions nach dem Client-Handshake | – |
+| `mcp.session.empty` | beendet ohne einen einzigen Tool-Aufruf | – |
+| `mcp.session.clean` (ab 3.11.5) | beendet, kein Tool-Aufruf schlug fehl | – |
+| `mcp.session.recovered` (ab 3.11.5) | Aufrufe schlugen fehl, aber der letzte Aufruf jedes Tools gelang | – |
+| `mcp.session.unresolved` (ab 3.11.5) | der letzte Aufruf mindestens eines Tools schlug fehl | davon mit einem solchen Fehler auf LeanCTX-Seite (`timeout`, `unavailable`, `too_large`, `other`) statt beim Aufrufer |
+| `mcp.session.retry` (ab 3.11.5) | Aufrufe direkt nach einem fehlgeschlagenen Aufruf desselben Tools | davon erneut fehlgeschlagen |
+
+Jede beendete Session erhält genau einen der Ausgänge `empty`, `clean`,
+`recovered`, `unresolved`. Ausgewertet werden nur die prozessinternen Zähler
+aus `core::telemetry`; Argumente, Pfade oder Fehlertexte fliessen nicht ein.
+Zweck: wie oft Agenten-Sessions mit LeanCTX technisch ohne Fehler durchlaufen
+und ob LeanCTX oder der Aufrufer einen Abbruch verursacht. Ob die
+Programmieraufgabe selbst gelang, lässt sich daraus nicht ableiten.
+
 ### `UsageHistoryMetrics` (Event `usage_history`, ab 3.11.1)
 
 Die eigene Tagesbilanz der Installation, wie `lean-ctx gain` sie zeigt (`stats.json`).

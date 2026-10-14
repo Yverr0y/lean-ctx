@@ -1077,18 +1077,25 @@ pub fn record_checkout_started() -> Result<(), String> {
 /// Counts one use of a registry feature (`core::telemetry_features`) for
 /// today; `ok = false` also counts a failure. Invalid codes are ignored.
 pub fn record_feature(code: &str, ok: bool) -> Result<(), String> {
-    if !valid_feature_code(code) || !telemetry_collection_eligible() {
+    record_feature_counts(&[(code, 1, u64::from(!ok))])
+}
+
+/// Adds `(code, count, failures)` tallies for today in one locked write.
+/// Invalid codes and empty tallies are ignored.
+pub fn record_feature_counts(entries: &[(&str, u64, u64)]) -> Result<(), String> {
+    let entries: Vec<_> = entries
+        .iter()
+        .filter(|(code, count, _)| *count > 0 && valid_feature_code(code))
+        .collect();
+    if entries.is_empty() || !telemetry_collection_eligible() {
         return Ok(());
     }
     with_locked_one_shots(|mut state| {
-        add_feature(
-            &mut today_totals(&mut state).features,
-            code,
-            FeatureTally {
-                count: 1,
-                failures: u64::from(!ok),
-            },
-        );
+        let features = &mut today_totals(&mut state).features;
+        for (code, count, failures) in entries {
+            let (count, failures) = (*count, *failures);
+            add_feature(features, code, FeatureTally { count, failures });
+        }
         Ok((state, ()))
     })
 }
