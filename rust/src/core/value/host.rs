@@ -8,7 +8,7 @@
 //! ancestors and so reads its own session, not a neighbour's.
 
 /// The process that started this one: for an MCP server, the agent host.
-/// `None` when orphaned (re-parented to init) or off Unix.
+/// `None` when orphaned (re-parented to init) or the platform cannot tell.
 pub fn host_pid() -> Option<u32> {
     #[cfg(unix)]
     {
@@ -16,7 +16,14 @@ pub fn host_pid() -> Option<u32> {
         let ppid = unsafe { libc::getppid() } as u32;
         (ppid > 1).then_some(ppid)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        parent_table()
+            .get(&std::process::id())
+            .copied()
+            .filter(|&ppid| ppid > 1)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         None
     }
@@ -74,7 +81,39 @@ fn parent_table() -> std::collections::HashMap<u32, u32> {
         .unwrap_or_default()
 }
 
-#[cfg(not(unix))]
+/// Windows has no `ps`/`/proc`: one ToolHelp snapshot lists every process with
+/// its parent (#2077).
+#[cfg(windows)]
+fn parent_table() -> std::collections::HashMap<u32, u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let mut table = std::collections::HashMap::new();
+    // SAFETY: the snapshot handle is closed below on every path that opened it.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return table;
+    }
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..PROCESSENTRY32W::default()
+    };
+    // SAFETY: snapshot and entry are valid for ToolHelp process enumeration.
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &raw mut entry) } != 0;
+    while has_entry {
+        table.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+        // SAFETY: snapshot and entry stay valid until CloseHandle below.
+        has_entry = unsafe { Process32NextW(snapshot, &raw mut entry) } != 0;
+    }
+    // SAFETY: this function owns the snapshot handle.
+    unsafe { CloseHandle(snapshot) };
+    table
+}
+
+#[cfg(not(any(unix, windows)))]
 fn parent_table() -> std::collections::HashMap<u32, u32> {
     std::collections::HashMap::new()
 }
@@ -116,7 +155,7 @@ mod tests {
         assert_eq!(parse_proc_stat_ppid("no parens"), None);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn ancestors_start_at_the_parent() {
         let chain = ancestors();

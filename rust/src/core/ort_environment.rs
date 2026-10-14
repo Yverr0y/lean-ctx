@@ -373,8 +373,13 @@ pub(crate) fn python_site_packages_dirs() -> Vec<PathBuf> {
             std::env::var_os("PATH").as_deref(),
             var_path("ProgramFiles").as_deref(),
             var_path("LOCALAPPDATA").as_deref(),
+            // `C:` → `C:\`: the drive's root, not its current directory.
             var_path("SystemDrive")
-                .map(|drive| drive.join("\\"))
+                .map(|drive| {
+                    let mut root = drive.into_os_string();
+                    root.push("\\");
+                    PathBuf::from(root)
+                })
                 .as_deref(),
         ));
     }

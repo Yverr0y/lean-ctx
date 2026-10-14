@@ -62,7 +62,11 @@ pub(crate) fn cmd_prompt_segment(args: &[String]) {
             .then(crate::core::eval_ab::speed::SpeedHeadline::latest)
             .flatten();
         let watch = snapshot::value_dir().map(|d| d.join("projects"));
-        let payload = json_payload(mode, snap.as_ref(), speed.as_ref(), watch.as_deref());
+        let mut payload = json_payload(mode, snap.as_ref(), speed.as_ref(), watch.as_deref());
+        // The caller's ancestors, nearest first: a session whose `host_pid` is
+        // among them serves the caller. Plugins read it here instead of walking
+        // the process tree themselves, which needs `ps` and fails on Windows (#2077).
+        payload["hosts"] = crate::core::value::host::ancestors().into();
         println!("{payload}");
         return;
     }
@@ -114,7 +118,8 @@ impl Options {
 
 /// `--json`: everything an editor status bar needs in one call, so the
 /// extension formats nothing itself. Schema 1:
-/// `{schema, display, segment, tooltip[], speed?, watch, verify}`.
+/// `{schema, display, segment, tooltip[], speed?, watch, verify}`; the command
+/// adds `hosts[]`, the caller's ancestor pids.
 /// `segment` is null when there is nothing fresh to show — never a 0.
 pub(crate) fn json_payload(
     mode: ValueDisplayMode,
