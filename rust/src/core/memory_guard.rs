@@ -365,17 +365,56 @@ pub fn allocator_stats() -> Option<(u64, u64)> {
 /// for "all arenas". Logs errors instead of silently swallowing them.
 pub fn jemalloc_purge() {
     #[cfg(all(feature = "jemalloc", not(windows), not(target_env = "musl")))]
-    {
-        use tikv_jemalloc_ctl::raw;
-        let purge_mib = b"arena.4096.purge\0";
-        // SAFETY: `purge_mib` is a static, NUL-terminated jemalloc MIB name and
-        // the value type (`u64`) matches the `arena.<i>.purge` ctl; `raw::write`
-        // validates the name and surfaces errors via `Result`.
-        unsafe {
-            if let Err(e) = raw::write(purge_mib, 0u64) {
-                tracing::debug!("[memory_guard] jemalloc purge failed: {e}");
-            }
-        }
+    if let Err(rc) = purge_all_arenas() {
+        tracing::warn!("[memory_guard] jemalloc purge failed: mallctl rc={rc}");
+    }
+}
+
+/// `arena.<i>.purge` is a void ctl: it must be called with no old and no new
+/// value. Writing one (as this did before #2075) fails with EPERM, which left
+/// every purge a silent no-op: measured on macOS, a dropped 900 MB parse
+/// working set stayed resident instead of falling back to ~50 MB.
+#[cfg(all(feature = "jemalloc", not(windows), not(target_env = "musl")))]
+fn purge_all_arenas() -> Result<(), i32> {
+    // SAFETY: static NUL-terminated ctl name; null old/new pointers with zero
+    // length are exactly the calling convention of a void mallctl.
+    let rc = unsafe {
+        rjem::mallctl(
+            c"arena.4096.purge".as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 { Ok(()) } else { Err(rc) }
+}
+
+/// jemalloc's C entry points. tikv-jemalloc-sys builds jemalloc with the
+/// `_rjem_` symbol prefix (see `_rjem_malloc_conf` in `main.rs`) and
+/// tikv-jemallocator already links it, so declaring the few symbols needed
+/// here avoids a direct dependency on the -sys crate.
+#[cfg(all(feature = "jemalloc", not(windows), not(target_env = "musl")))]
+mod rjem {
+    use std::ffi::{c_char, c_int, c_void};
+
+    unsafe extern "C" {
+        #[link_name = "_rjem_malloc"]
+        pub fn malloc(size: usize) -> *mut c_void;
+        #[link_name = "_rjem_calloc"]
+        pub fn calloc(count: usize, size: usize) -> *mut c_void;
+        #[link_name = "_rjem_realloc"]
+        pub fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
+        #[link_name = "_rjem_free"]
+        pub fn free(ptr: *mut c_void);
+        #[link_name = "_rjem_mallctl"]
+        pub fn mallctl(
+            name: *const c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *mut c_void,
+            newlen: usize,
+        ) -> c_int;
     }
 }
 
@@ -595,6 +634,7 @@ pub fn start_guard(eviction_callback: Arc<dyn Fn(PressureLevel) -> bool + Send +
                 let made_progress = (eviction_callback)(snap.pressure_level);
                 if snap.pressure_level >= PressureLevel::Hard {
                     jemalloc_purge();
+                    release_system_heap();
                 }
 
                 // Rounds that reclaim nothing back off (and finally pause) at
@@ -618,7 +658,51 @@ pub fn start_guard(eviction_callback: Arc<dyn Fn(PressureLevel) -> bool + Send +
 /// Force immediate purge of all caches and jemalloc arenas.
 pub fn force_purge() {
     jemalloc_purge();
+    release_system_heap();
     tracing::info!("[memory_guard] force_purge completed");
+}
+
+/// Route tree-sitter's C allocations (parse trees, parser stacks, query
+/// cursors) through jemalloc, whose arenas [`jemalloc_purge`] returns to the
+/// OS. The platform malloc keeps them instead: measured on macOS, freed
+/// parser-sized blocks stayed in the footprint and `malloc_zone_pressure_relief`
+/// released nothing, so a daemon that parses every file of every root grew
+/// with each new root (#2075).
+///
+/// Must run once at process start, before the first tree-sitter object
+/// exists: a block allocated by one allocator must never be freed by the other.
+pub fn route_tree_sitter_to_jemalloc() {
+    #[cfg(all(
+        feature = "jemalloc",
+        feature = "tree-sitter",
+        not(windows),
+        not(target_env = "musl")
+    ))]
+    // SAFETY: called first thing in `main`, before any thread or tree-sitter
+    // object exists, so no allocation can cross allocators. The jemalloc entry
+    // points have exactly the C `malloc` family's signatures and semantics.
+    unsafe {
+        tree_sitter::set_allocator(
+            Some(rjem::malloc),
+            Some(rjem::calloc),
+            Some(rjem::realloc),
+            Some(rjem::free),
+        );
+    }
+}
+
+/// Return glibc's free pages to the OS. C dependencies other than tree-sitter
+/// (SQLite, regex engines) still allocate through the platform malloc, whose
+/// per-thread arenas otherwise keep every page an index build touched.
+/// macOS has no equivalent: `malloc_zone_pressure_relief` released nothing
+/// in measurement, which is why tree-sitter is routed to jemalloc instead.
+pub fn release_system_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` only walks glibc's own arenas and releases pages
+    // that hold no live allocation; it is thread-safe.
+    unsafe {
+        libc::malloc_trim(0);
+    }
 }
 
 // --- Platform-specific implementations ---
@@ -767,6 +851,14 @@ pub mod tests {
             cfg!(target_os = "linux"),
             "background_thread is only supported on Linux: {body}"
         );
+    }
+
+    /// #2075: the purge ctl is void; passing a value made it fail with EPERM,
+    /// so no purge ever returned a page to the OS.
+    #[cfg(all(feature = "jemalloc", not(windows), not(target_env = "musl")))]
+    #[test]
+    fn jemalloc_purge_is_accepted_by_the_allocator() {
+        assert_eq!(purge_all_arenas(), Ok(()));
     }
 
     #[test]

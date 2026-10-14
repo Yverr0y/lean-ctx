@@ -61,6 +61,10 @@ pub(super) fn default_mcp_max_rss_mb() -> u64 {
     512
 }
 
+pub(super) fn default_daemon_max_rss_mb() -> u64 {
+    2048
+}
+
 pub(super) fn default_session_retention_days() -> u32 {
     7
 }

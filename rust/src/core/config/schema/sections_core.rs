@@ -619,6 +619,7 @@ pub(super) fn build(sections: &mut BTreeMap<String, SectionSchema>) {
             "LEAN_CTX_MCP_MAX_RSS_MB",
         ),
     );
+    root.insert("daemon_max_rss_mb".into(), daemon_max_rss_key(&cfg));
     root.insert(
         "mcp_idle_exit_minutes".into(),
         key_with_env(

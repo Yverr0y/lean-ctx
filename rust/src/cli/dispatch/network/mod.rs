@@ -720,6 +720,14 @@ pub(super) fn cmd_serve(rest: &[String]) {
         }
 
         if foreground_daemon {
+            // Process RSS target, installed before the first request starts the
+            // memory guardian: the daemon indexes every root on the machine and
+            // a RAM percentage alone let it grow to several GB (#2075).
+            crate::core::memory_guard::set_process_rss_cap(
+                crate::core::config::Config::load()
+                    .daemon_max_rss_mb_effective()
+                    .saturating_mul(1024 * 1024),
+            );
             if let Err(e) = crate::daemon::init_foreground_daemon() {
                 eprintln!("Error writing PID file: {e}");
                 std::process::exit(1);

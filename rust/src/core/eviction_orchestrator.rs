@@ -75,9 +75,9 @@ pub(crate) fn on_memory_pressure(level: memory_guard::PressureLevel) -> bool {
         let ann_bytes = super::ann_cache::memory_usage_bytes();
         super::content_cache::clear();
         super::ann_cache::clear();
-        super::search_index::clear_resident();
+        let search_dropped = super::search_index::clear_resident();
         super::graph_cache::invalidate(None);
-        made_progress |= content_bytes > 0 || ann_bytes > 0;
+        made_progress |= content_bytes > 0 || ann_bytes > 0 || search_dropped;
     }
 
     made_progress

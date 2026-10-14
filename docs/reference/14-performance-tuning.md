@@ -128,6 +128,7 @@ profile-derived default":
 | `max_disk_mb` | `LEAN_CTX_MAX_DISK_MB` | total on-disk budget across caches/indexes |
 | `max_ram_percent` | `LEAN_CTX_MAX_RAM_PERCENT` | soft process-RSS target as % of system memory (default 5) |
 | `mcp_max_rss_mb` | `LEAN_CTX_MCP_MAX_RSS_MB` | per-process RSS target of each stdio MCP server; the lower of this and `max_ram_percent` applies (default 512, `0` = percent only) |
+| `daemon_max_rss_mb` | `LEAN_CTX_DAEMON_MAX_RSS_MB` | RSS target of the background daemon; the lower of this and `max_ram_percent` applies (default 2048, `0` = percent only) |
 | `mcp_idle_exit_minutes` | `LEAN_CTX_MCP_IDLE_EXIT_MINUTES` | exit a stdio MCP server after N minutes without a tool call (default `0` = never) |
 | `max_staleness_days` | `LEAN_CTX_MAX_STALENESS_DAYS` | auto-prune entries older than N days |
 
@@ -171,6 +172,16 @@ footprint 275 MB, falling to 225 MB over the following minute.
 because Codex does not restart an exited server: the resumed thread then loses
 lean-ctx until the Codex app restarts. Enable it for hosts that respawn their
 servers, or when you accept that trade-off.
+
+### The background daemon
+
+One daemon (`lean-ctx serve --_foreground-daemon`) builds the indexes for
+every session and project root on the machine and runs for days. It keeps the
+search index of at most eight roots resident (least recently used first out),
+like the graph cache, and `daemon_max_rss_mb` (2048 MB) caps its guardian
+target on large machines. After each build phase it returns freed allocator
+pages to the OS; tree-sitter's parser memory goes through the same allocator,
+so it is returned as well.
 
 ---
 

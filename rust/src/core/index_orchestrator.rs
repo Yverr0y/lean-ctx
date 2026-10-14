@@ -625,15 +625,17 @@ pub fn build_semantic_background(project_root: &str) {
     }
 }
 
-/// Start the memory guardian for an index build. Idempotent per process.
+/// Start the memory guardian for an index build. Idempotent per process: the
+/// first `start_guard` call owns the callback, so a daemon whose first request
+/// is `/v1/index/ensure` gets only this one. It must reach the same
+/// process-global caches as the server callback, or the daemon cannot shed its
+/// resident search indexes under pressure (#2075).
 fn start_index_memory_guard(label: &'static str) {
     crate::core::memory_guard::start_guard(std::sync::Arc::new(move |level| {
         tracing::warn!("[{label}] memory pressure: {level:?} — background tasks will throttle");
-        if level >= crate::core::memory_guard::PressureLevel::Hard {
-            crate::core::content_cache::clear();
-        }
+        let reclaimed = crate::core::eviction_orchestrator::on_memory_pressure(level);
         crate::core::memory_guard::force_purge();
-        true
+        reclaimed
     }));
 }
 

@@ -567,6 +567,13 @@ pub struct Config {
     /// Override via LEAN_CTX_MCP_MAX_RSS_MB env var.
     #[serde(default = "serde_defaults::default_mcp_max_rss_mb")]
     pub mcp_max_rss_mb: u64,
+    /// Process RSS target (MB) of the background daemon; the guardian uses the
+    /// lower of this and `max_ram_percent` (default 2048, 0 = percent only).
+    /// One daemon serves every session and project root on the machine for
+    /// days, so a percentage of a large machine's RAM alone is too loose (#2075).
+    /// Override via LEAN_CTX_DAEMON_MAX_RSS_MB env var.
+    #[serde(default = "serde_defaults::default_daemon_max_rss_mb")]
+    pub daemon_max_rss_mb: u64,
     /// Exit a stdio MCP server after this many minutes without a tool call
     /// (0 = never, the default). Off by default because some hosts (Codex)
     /// do not restart an exited server: the resumed thread then loses

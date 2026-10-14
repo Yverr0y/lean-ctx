@@ -96,6 +96,18 @@ fn hook_mode_key() -> KeySchema {
     )
 }
 
+/// `daemon_max_rss_mb` (root section); kept here so `sections_core.rs` stays
+/// under the LOC gate.
+fn daemon_max_rss_key(cfg: &crate::core::config::Config) -> KeySchema {
+    key_with_env(
+        "u64",
+        serde_json::json!(cfg.daemon_max_rss_mb),
+        "Process RSS target (MB) of the background daemon; the guardian evicts above \
+         the lower of this and max_ram_percent (default 2048, 0 = percent only)",
+        "LEAN_CTX_DAEMON_MAX_RSS_MB",
+    )
+}
+
 impl ConfigSchema {
     pub fn generate() -> Self {
         let mut sections = BTreeMap::new();
