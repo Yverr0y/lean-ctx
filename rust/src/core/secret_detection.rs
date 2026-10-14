@@ -91,10 +91,6 @@ fn stripe_key_re() -> &'static Regex {
     static_regex!(r"[sr]k_live_[0-9a-zA-Z]{10,}")
 }
 
-fn db_url_re() -> &'static Regex {
-    static_regex!(r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s]+:[^\s]+@")
-}
-
 fn npm_token_re() -> &'static Regex {
     static_regex!(r"npm_[A-Za-z0-9]{10,}")
 }
@@ -115,7 +111,6 @@ const BUILTIN_PATTERNS: &[(&str, fn() -> &'static Regex)] = &[
     ("jwt", jwt_re),
     ("slack_token", slack_token_re),
     ("stripe_key", stripe_key_re),
-    ("db_url", db_url_re),
     ("npm_token", npm_token_re),
 ];
 
@@ -216,6 +211,24 @@ fn collect_matches(
         }
         matches.push(SecretMatch {
             pattern_name: "bearer_token",
+            line_number: offset_to_line(whole.start()),
+            redacted_preview: make_redacted_preview(whole.as_str()),
+        });
+    }
+
+    // Same rule as the redactor: a placeholder password or an already
+    // redacted URL is no credential, so redacted output never re-matches.
+    for caps in crate::core::redaction::database_url_re().captures_iter(&normalized) {
+        let Some(whole) = caps.get(0) else {
+            continue;
+        };
+        if !crate::core::redaction::database_url_has_credential(&caps)
+            || excluded(excludes, whole.as_str())
+        {
+            continue;
+        }
+        matches.push(SecretMatch {
+            pattern_name: "db_url",
             line_number: offset_to_line(whole.start()),
             redacted_preview: make_redacted_preview(whole.as_str()),
         });
@@ -401,6 +414,52 @@ pub mod tests {
         );
         let matches = detect_secrets(input);
         assert!(matches.iter().any(|m| m.pattern_name == "db_url"));
+    }
+
+    /// Ops telemetry (3.11.4): `ctx_read` withheld whole files with
+    /// `(secret.redacted, redaction.incomplete)` — the redacted database URL
+    /// `scheme://[REDACTED:db_url]@host` matched the detector's
+    /// `user:password@` again. Redacted output must never re-match.
+    #[test]
+    fn redacted_database_urls_do_not_match_again() {
+        let url = |scheme: &str, user: &str, pw: &str| {
+            format!("{scheme}{}{user}:{pw}{}db.internal:5432/app", "://", "@")
+        };
+        let cases = [
+            url("postgres", "app", "s3cretPassw0rd"),
+            url("postgresql", "app", "Zq7Lm2Vx"),
+            url("mysql", "root", "hunter2hunter2"),
+            url("mongodb+srv", "admin", "Xy9pQ2rT"),
+            url("redis", "", "Zk3mP9qL"),
+            url("postgres", "app", "p@ss"),
+        ];
+        let report_only = SecretDetectionConfig {
+            redact: false,
+            ..SecretDetectionConfig::default()
+        };
+        for case in cases {
+            let input = format!("DATABASE_URL={case}\nkeep after\n");
+            assert!(
+                detect_secrets(&input)
+                    .iter()
+                    .any(|m| m.pattern_name == "db_url"),
+                "credential must be detected: {input}"
+            );
+            let (redacted, _) = scan_and_redact(&input, &SecretDetectionConfig::default());
+            assert!(
+                !redacted.contains("Passw0rd") && !redacted.contains("ss@db"),
+                "{redacted}"
+            );
+            assert!(redacted.ends_with("keep after\n"), "{redacted}");
+            let (_, residual) = scan_and_redact(&redacted, &report_only);
+            assert!(
+                residual.is_empty(),
+                "re-scan of {redacted} found {residual:?}"
+            );
+        }
+        // A documentation placeholder is neither reported nor rewritten.
+        let doc = format!("DATABASE_URL={}\n", url("postgres", "user", "changeme"));
+        assert!(detect_secrets(&doc).is_empty(), "{doc}");
     }
 
     #[test]

@@ -66,6 +66,24 @@ fn case_06_key_on_the_first_line_is_detected_and_redacted() {
     assert!(!delivered(&admission).contains(AWS_KEY));
 }
 
+/// Ops telemetry (3.11.4): a config file with a database URL and one more
+/// secret was withheld whole (`redaction.incomplete`) because the redacted
+/// URL re-matched the detector. It must be delivered redacted instead.
+#[test]
+fn database_url_next_to_another_secret_is_delivered_redacted() {
+    let db = format!("postgres{}app:s3cretPassw0rd{}db:5432/app", "://", "@");
+    let text = format!("DATABASE_URL={db}\naws_key = {AWS_KEY}\nport = 8080\n");
+    let admission = admit(&text, None, &policy());
+    assert_valid(&admission);
+    assert_eq!(admission.disposition(), ContextDispositionV1::AllowRedacted);
+    let out = delivered(&admission);
+    assert!(
+        !out.contains("s3cretPassw0rd") && !out.contains(AWS_KEY),
+        "{out}"
+    );
+    assert!(out.ends_with("port = 8080\n"), "{out}");
+}
+
 #[test]
 fn case_07_key_near_the_end_of_a_long_input_is_detected() {
     let mut text = "let filler = 1;\n".repeat(20_000);

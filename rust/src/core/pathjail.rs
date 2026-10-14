@@ -517,6 +517,13 @@ const LANGUAGE_CACHE_PATTERNS: &[(&str, &str, &str)] = &[
 /// — and stay jailed because only these exact subtrees are opened). Opened
 /// read-only, like a language cache; writes stay denied. (Per-project auto
 /// memory is admitted separately by [`is_harness_auto_memory_path`].)
+///
+/// The agents' own settings and MCP configs are opened the same way, file by
+/// file: agents read them to debug their setup, and "protected location" was
+/// still the refusal seen on the most installations in 3.11.4. A token in them
+/// is masked by the context gateway like in any other read. `~/.claude.json`
+/// (may hold an API key), credential files, sessions and transcripts stay
+/// jailed.
 const AGENT_INSTRUCTION_ROOTS: &[(&str, &str)] = &[
     (".claude/skills", "Claude Code skills"),
     (".claude/commands", "Claude Code commands"),
@@ -526,18 +533,30 @@ const AGENT_INSTRUCTION_ROOTS: &[(&str, &str)] = &[
     (".claude/plugins/marketplaces", "Claude Code plugins"),
     (".claude/plugins/cache", "Claude Code plugins"),
     (".claude/CLAUDE.md", "Claude Code instructions"),
+    (".claude/settings.json", "Claude Code settings"),
+    (".claude/settings.local.json", "Claude Code settings"),
+    (".claude/keybindings.json", "Claude Code settings"),
     (".codex/skills", "Codex skills"),
     (".codex/prompts", "Codex prompts"),
     (".codex/AGENTS.md", "Codex instructions"),
+    (".codex/config.toml", "Codex config"),
+    (".codex/hooks.json", "Codex config"),
     (".agents/skills", "agent skills"),
     (".cursor/rules", "Cursor rules"),
     (".cursor/skills", "Cursor skills"),
     (".cursor/commands", "Cursor commands"),
+    (".cursor/mcp.json", "Cursor config"),
+    (".cursor/hooks.json", "Cursor config"),
     (".gemini/GEMINI.md", "Gemini instructions"),
     (".gemini/commands", "Gemini commands"),
+    (".gemini/settings.json", "Gemini config"),
+    (".codebuddy/settings.json", "CodeBuddy settings"),
     (".config/opencode/agent", "OpenCode agents"),
     (".config/opencode/command", "OpenCode commands"),
     (".config/opencode/AGENTS.md", "OpenCode instructions"),
+    (".config/opencode/opencode.json", "OpenCode config"),
+    (".config/opencode/opencode.jsonc", "OpenCode config"),
+    (".codeium/windsurf/mcp_config.json", "Windsurf config"),
 ];
 
 /// If `candidate` lies in one of [`AGENT_INSTRUCTION_ROOTS`] below the home
