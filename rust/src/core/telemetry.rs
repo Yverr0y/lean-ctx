@@ -32,6 +32,25 @@ pub(crate) struct ToolCallCounter {
     pub latency_us: u64,
     /// Failures by [`crate::core::telemetry_failure::FAILURE_KINDS`] index.
     pub failure_kinds: [u64; crate::core::telemetry_failure::FAILURE_KINDS.len()],
+    /// Class of the most recent call's failure; `None` after a success.
+    pub last_failure: Option<crate::core::telemetry_failure::FailureKind>,
+    /// Calls made right after a failed call of the same tool, and how many
+    /// of those failed again.
+    pub retries: u64,
+    pub retry_failures: u64,
+}
+
+/// How the agent session served by this process went so far, from the
+/// in-process counters only. Feeds the session-end tally in
+/// `core::telemetry_features`; nothing here leaves the machine as is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SessionOutcome {
+    pub calls: u64,
+    pub failures: u64,
+    /// Failure classes of tools whose last call failed.
+    pub unresolved: Vec<crate::core::telemetry_failure::FailureKind>,
+    pub retries: u64,
+    pub retry_failures: u64,
 }
 
 pub fn global_metrics() -> &'static Metrics {
@@ -141,6 +160,13 @@ impl Metrics {
         let counter = per_tool.entry(tool).or_default();
         counter.calls = counter.calls.saturating_add(1);
         counter.latency_us = counter.latency_us.saturating_add(latency_us);
+        if counter.last_failure.is_some() {
+            counter.retries = counter.retries.saturating_add(1);
+            if failure.is_some() {
+                counter.retry_failures = counter.retry_failures.saturating_add(1);
+            }
+        }
+        counter.last_failure = failure;
         if let Some(kind) = failure {
             counter.failures = counter.failures.saturating_add(1);
             let slot = &mut counter.failure_kinds[kind.index()];
@@ -297,6 +323,20 @@ impl Metrics {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
+        }
+    }
+
+    pub(crate) fn session_outcome(&self) -> SessionOutcome {
+        let per_tool = self
+            .tool_call_consistency
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        SessionOutcome {
+            calls: self.tool_calls_total.load(Ordering::Relaxed),
+            failures: self.tool_calls_error.load(Ordering::Relaxed),
+            unresolved: per_tool.values().filter_map(|c| c.last_failure).collect(),
+            retries: per_tool.values().map(|c| c.retries).sum(),
+            retry_failures: per_tool.values().map(|c| c.retry_failures).sum(),
         }
     }
 
@@ -720,6 +760,9 @@ mod tests {
                     kinds[crate::core::telemetry_failure::FailureKind::Other.index()] = 1;
                     kinds
                 },
+                last_failure: Some(crate::core::telemetry_failure::FailureKind::Other),
+                retries: 0,
+                retry_failures: 0,
             })
         );
         assert_eq!(
@@ -730,6 +773,28 @@ mod tests {
                 latency_us: 3_000,
                 ..ToolCallCounter::default()
             })
+        );
+    }
+
+    #[test]
+    fn session_outcome_tracks_retries_and_unresolved_tools() {
+        use crate::core::telemetry_failure::FailureKind;
+        let m = Metrics::new();
+        m.record_named_tool_outcome("ctx_read", 1, Some(FailureKind::NotFound));
+        m.record_named_tool_outcome("ctx_read", 1, Some(FailureKind::NotFound));
+        m.record_named_tool_outcome("ctx_read", 1, None);
+        m.record_named_tool_outcome("ctx_shell", 1, None);
+        m.record_named_tool_outcome("ctx_shell", 1, Some(FailureKind::Timeout));
+
+        assert_eq!(
+            m.session_outcome(),
+            SessionOutcome {
+                calls: 5,
+                failures: 3,
+                unresolved: vec![FailureKind::Timeout],
+                retries: 2,
+                retry_failures: 1,
+            }
         );
     }
 
