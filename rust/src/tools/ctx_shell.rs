@@ -163,18 +163,28 @@ pub(crate) fn validate_command_in_cwd(
     // commit message, a doc, a fixture — and refusing the call for it blocks
     // writing about the guard at all. This detector was simply never switched
     // over when the other two were.
+    //
+    // #2080: the refusal used to say "the capture rule applies to them as
+    // well" and that "a literal path" would do. Neither was true — `>` may
+    // write into the project and the configured roots, a download only into
+    // a scratch path — so a caller followed it to a project path and was
+    // refused again with the identical text. It now states the rule it applies.
     if let Some(reason) = download_to_file_reason(&cmd_no_heredoc) {
         return Some(format!(
             "ERROR: ctx_shell detected a file download/write ({reason}). \
-             Download flags write a file without a redirect, so the capture rule applies \
-             to them as well (GH #391). \
+             A download through ctx_shell may only write into a scratch path \
+             (/tmp, /var/tmp, $TMPDIR) — stricter than `>` output capture: not into the \
+             project, `allow_paths` / `extra_roots` or `write_allow_paths` (GH #391). \
              For text, fetch to stdout: curl <url> / wget -qO- <url>. \
              For a binary (image, PDF, archive) neither stdout nor the editor's Write \
-             tool can carry the bytes — download to an absolute scratch path instead, \
-             e.g. curl -sL -o /tmp/shot.png <url>, which is permitted (GH #1661). \
-             The target must be a literal path, $TMPDIR, or a variable this same command \
-             set to a literal earlier (D=/tmp/x; curl -o $D/f); any other variable cannot \
-             be resolved here and is refused."
+             tool can carry the bytes — download to scratch, e.g. \
+             curl -sL -o /tmp/shot.png <url> (GH #1661), then move it where it belongs \
+             with mv. \
+             The target counts as scratch when it is spelled as one: an absolute scratch \
+             path, $TMPDIR/…, a variable this same command set to a literal scratch path \
+             (D=/tmp/x; curl -o $D/f), or a relative name after a `cd` into scratch \
+             (cd $TMPDIR/x && curl -o f). Any other variable cannot be resolved here and \
+             is refused."
         ));
     }
 
@@ -259,13 +269,14 @@ fn download_to_file_reason(command: &str) -> Option<String> {
     // to a literal (`D=/tmp/x; curl -o $D/f`) is judged where it lands; any
     // other variable stays unresolved and is refused as before.
     let segments = crate::core::command_cwd::segments_with_cwd(command, None);
-    let known_vars = literal_assignments_before_each_segment(command, segments.len());
+    let known_vars =
+        crate::core::command_vars::literal_assignments_before_each_segment(command, segments.len());
     for (index, seg_cwd) in segments.into_iter().enumerate() {
         let seg = seg_cwd.segment;
         let here = seg_cwd.cwd;
         let vars = &known_vars[index];
         let resolve = |path: &str| -> String {
-            let expanded = expand_leading_variable(path, vars);
+            let expanded = crate::core::command_vars::expand_leading_variable(path, vars);
             let path = expanded.as_deref().unwrap_or(path);
             let p = std::path::Path::new(path);
             // `starts_with('/')`: shell text, so a Unix-absolute target is
@@ -351,122 +362,6 @@ fn download_to_file_reason(command: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// For each segment, the variables known to hold a literal value when that
-/// segment starts (#1953).
-///
-/// Only a standalone `NAME=value` / `export NAME=value` segment that certainly
-/// runs in the current shell counts: not behind `&&`/`||` (it may be skipped),
-/// not in a pipeline or the background (a subshell, so nothing propagates).
-/// A value is literal only without `$`, a backtick or a leading `~`. Any
-/// segment that can rebind variables some other way (`read`, `for`, `eval`,
-/// `source`, …) forgets everything known so far. Where this cannot follow the
-/// shell it knows less, and an unknown variable leaves the target refused.
-fn literal_assignments_before_each_segment(
-    command: &str,
-    segment_count: usize,
-) -> Vec<std::collections::HashMap<String, String>> {
-    use crate::core::shell_allowlist::Separator;
-
-    let separated = crate::core::shell_allowlist::segments_with_separators(command);
-    if separated.len() != segment_count {
-        // Both come from the same scanner; if they ever disagree, resolve nothing.
-        return vec![std::collections::HashMap::new(); segment_count];
-    }
-    let mut known = std::collections::HashMap::new();
-    let mut prev: Option<Separator> = None;
-    let mut before_each = Vec::with_capacity(segment_count);
-    for (segment, sep) in separated {
-        before_each.push(known.clone());
-        let tokens = crate::core::shell_allowlist::shell_tokenize(&segment);
-        let words: &[String] = match tokens.first().map(String::as_str) {
-            Some("export") => &tokens[1..],
-            _ => &tokens,
-        };
-        let assignments: Option<Vec<(&str, &str)>> = words
-            .iter()
-            .map(|word| {
-                let (name, value) = word.split_once('=')?;
-                let valid_name = name
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-                valid_name.then_some((name, value))
-            })
-            .collect();
-        match assignments {
-            Some(pairs) if !pairs.is_empty() => {
-                let in_current_shell = matches!(prev, None | Some(Separator::Sequence))
-                    && matches!(sep, None | Some(Separator::Sequence | Separator::And));
-                for (name, value) in pairs {
-                    let literal = !value.contains(['$', '`']) && !value.starts_with('~');
-                    if in_current_shell && literal {
-                        known.insert(name.to_string(), value.to_string());
-                    } else {
-                        known.remove(name);
-                    }
-                }
-            }
-            _ => {
-                let rebinds = matches!(
-                    tokens.first().map(String::as_str),
-                    Some(
-                        "read"
-                            | "for"
-                            | "select"
-                            | "eval"
-                            | "source"
-                            | "."
-                            | "unset"
-                            | "declare"
-                            | "typeset"
-                            | "local"
-                            | "readonly"
-                            | "export"
-                            | "mapfile"
-                            | "readarray"
-                            | "getopts"
-                            | "printf"
-                    )
-                );
-                if rebinds {
-                    known.clear();
-                }
-            }
-        }
-        prev = sep;
-    }
-    before_each
-}
-
-/// Expand a target that starts with `$NAME` or `${NAME}` from `known`, or from
-/// the environment for `$TMPDIR` — the scratch variable the guard itself
-/// honours. `None` when the target starts with no variable or an unknown one.
-fn expand_leading_variable(
-    path: &str,
-    known: &std::collections::HashMap<String, String>,
-) -> Option<String> {
-    let rest = path.strip_prefix('$')?;
-    let (name, tail) = if let Some(braced) = rest.strip_prefix('{') {
-        let (name, tail) = braced.split_once('}')?;
-        (name, tail)
-    } else {
-        let end = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(rest.len());
-        rest.split_at(end)
-    };
-    if name.is_empty() || !(tail.is_empty() || tail.starts_with('/')) {
-        return None;
-    }
-    let value = match known.get(name) {
-        Some(value) => value.clone(),
-        None if name == "TMPDIR" => std::env::var("TMPDIR").ok().filter(|v| !v.is_empty())?,
-        None => return None,
-    };
-    Some(format!("{value}{tail}"))
 }
 
 /// Returns true only for heredocs that redirect to files (the dangerous pattern).

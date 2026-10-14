@@ -738,9 +738,31 @@ fn a_download_target_through_a_literal_variable_is_judged_where_it_lands() {
     }
     let msg = validate_command("curl -sL -o $UNSET/shot.png https://e/x").expect("blocked");
     assert!(
-        msg.contains("literal path"),
+        msg.contains("a variable this same command set to a literal scratch path"),
         "the refusal must say which spellings it can resolve: {msg}"
     );
+}
+
+/// #2080: the refusal claimed parity with the `>` capture rule and that "a
+/// literal path" would do, so a caller retried with a project path and was
+/// refused again with the same text. It must state the rule it applies.
+#[test]
+fn the_download_refusal_states_the_scratch_only_rule() {
+    for cmd in [
+        "curl -s -o lcx-probe-d.txt https://example.com",
+        "curl -s -o /repo/lcx-probe-h.txt https://example.com",
+    ] {
+        let msg = validate_command(cmd).expect("a project download stays refused");
+        assert!(
+            msg.contains("may only write into a scratch path")
+                && msg.contains("not into the project"),
+            "{msg}"
+        );
+        assert!(
+            !msg.contains("capture rule applies") && !msg.contains("literal path"),
+            "no wording that promises a spelling which cannot pass: {msg}"
+        );
+    }
 }
 
 /// The refusal has to name a route that works for the payload at hand.
@@ -1239,4 +1261,128 @@ fn a_refused_relative_target_explains_where_it_was_placed() {
         validate_command_in_cwd("echo hi > /repo/f", &paths, Some("/repo"), Some("/repo"))
             .expect("refused");
     assert!(!absolute.contains("its own command runs in"), "{absolute}");
+}
+
+/// #2081: quoted text is data. The reporter appended a log line that mentioned
+/// `cd $TMPDIR`; the word `cd` inside the string made the directory "unknown"
+/// and the relative target was refused.
+#[test]
+fn a_cd_inside_a_quoted_argument_does_not_unplace_a_relative_target() {
+    let scratch = vec!["/private/tmp".to_string()];
+    for command in [
+        "printf '%s\\n' 'note: cd /repo mention' > f.txt",
+        "printf '%s\\n' 'note: cd $TMPDIR mention' > f.txt",
+        "echo \"then pushd /repo\" >> f.txt",
+    ] {
+        assert!(
+            validate_command_in_cwd(command, &scratch, Some("/repo"), Some("/private/tmp/s"))
+                .is_none(),
+            "{command}: the target lands in the call's scratch cwd"
+        );
+    }
+    // The reporter's form, with the project as a capture root.
+    let roots = vec!["/private/tmp".to_string(), "/repo".to_string()];
+    let command = "cd /repo && printf '| %s | (cd $TMPDIR not followed by capture guards) |\\n' \
+                   \"$(date +%H:%M)\" >> .wolf/memory.md && tail -1 .wolf/memory.md";
+    assert!(
+        validate_command_in_cwd(command, &roots, None, Some("/repo")).is_none(),
+        "{command}"
+    );
+}
+
+/// The other side of #2081: a quoted command name still runs, and `eval` runs
+/// text in this shell. From a scratch cwd these can move into the project, so
+/// a relative target after them stays refused.
+#[test]
+fn a_quoted_cd_command_or_eval_keeps_a_relative_target_refused() {
+    let scratch = vec!["/private/tmp".to_string()];
+    for command in [
+        "\"cd\" /repo && echo hi > f",
+        "c'd' /repo && echo hi > f",
+        "\\cd /repo && echo hi > f",
+        "eval 'cd /repo' && echo hi > f",
+        "eval \"cd /repo\"; echo hi > f",
+    ] {
+        assert!(
+            validate_command_in_cwd(command, &scratch, Some("/repo"), Some("/private/tmp/s"))
+                .is_some(),
+            "{command}: the directory is not certain, so a relative target must be refused"
+        );
+    }
+}
+
+/// #2079: `cd $TMPDIR/<dir>` and `cd $D` with `D` set to a literal earlier are
+/// followed like the literal, for both capture guards.
+#[test]
+fn a_cd_through_a_known_variable_places_a_relative_target() {
+    let scratch = vec!["/private/tmp".to_string()];
+    for command in [
+        "D=/private/tmp/w; cd $D && echo hi > e.txt",
+        "D=/private/tmp; cd \"$D/w\" && echo hi | tee e.txt",
+    ] {
+        assert!(
+            validate_command_in_cwd(command, &scratch, Some("/repo"), Some("/repo")).is_none(),
+            "{command}: the target lands in scratch"
+        );
+    }
+    for command in [
+        "D=/tmp/w; cd $D && curl -s -o b.txt https://example.com",
+        "D=/tmp; cd ${D}/w && curl -s -o b.txt https://example.com",
+    ] {
+        assert!(download_to_file_reason(command).is_none(), "{command}");
+    }
+    // Resolved, and refused on where it lands.
+    for command in [
+        "D=/repo; cd $D && echo hi > f",
+        "TMPDIR=/repo; cd $TMPDIR && echo hi > f",
+    ] {
+        assert!(
+            validate_command_in_cwd(command, &scratch, Some("/repo"), Some("/private/tmp/s"))
+                .is_some(),
+            "{command}: the target lands in the project"
+        );
+    }
+    // Not resolvable: rebound to something unknown, or never set.
+    for command in [
+        "TMPDIR=$PWD; cd $TMPDIR && echo hi > f",
+        "cd $PROJECT && echo hi > f",
+    ] {
+        assert!(
+            validate_command_in_cwd(command, &scratch, Some("/repo"), Some("/private/tmp/s"))
+                .is_some(),
+            "{command}: the directory is not certain"
+        );
+    }
+    for command in [
+        "TMPDIR=$PWD; cd $TMPDIR && curl -s -o b.txt https://e/x",
+        // Was judged against the environment's `$TMPDIR` and let through.
+        "TMPDIR=$PWD; curl -s -o $TMPDIR/b.txt https://e/x",
+        "export TMPDIR=$(pwd); curl -s -o $TMPDIR/b.txt https://e/x",
+    ] {
+        assert!(download_to_file_reason(command).is_some(), "{command}");
+    }
+
+    // The reporter's exact forms, wherever this machine's `$TMPDIR` is.
+    let Some(tmpdir) = std::env::var("TMPDIR")
+        .ok()
+        .filter(|t| !t.is_empty() && std::path::Path::new(t).is_dir())
+    else {
+        return;
+    };
+    let paths = vec![tmpdir];
+    for command in [
+        "cd $TMPDIR && echo hi > lcx-probe-i.txt",
+        "cd $TMPDIR/lcx-probe && echo hi > e.txt",
+    ] {
+        assert!(
+            validate_command_in_cwd(command, &paths, Some("/repo"), Some("/repo")).is_none(),
+            "{command}"
+        );
+    }
+    assert!(
+        download_to_file_reason(
+            "cd $TMPDIR/lcx-probe && curl -s -m 10 -o b.txt https://example.com"
+        )
+        .is_none()
+    );
 }
