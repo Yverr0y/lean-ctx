@@ -145,7 +145,7 @@ pub(crate) mod job {
             job.set_limit_flags(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
                 .map_err(|error| format!("failed to configure job object: {error}"))?;
             // SAFETY: Child owns a live process handle for the spawned process.
-            let assigned = unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as _) };
+            let assigned = unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle()) };
             if assigned == 0 {
                 return Err(format!(
                     "failed to assign process {} to its job: {}",
@@ -222,7 +222,7 @@ pub(crate) mod job {
             ..THREADENTRY32::default()
         };
         // SAFETY: snapshot and entry are valid for ToolHelp thread enumeration.
-        let mut has_entry = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        let mut has_entry = unsafe { Thread32First(snapshot, &raw mut entry) } != 0;
         let mut resumed = false;
         let result = loop {
             if !has_entry {
@@ -256,7 +256,7 @@ pub(crate) mod job {
                 resumed = true;
             }
             // SAFETY: snapshot and entry remain valid until CloseHandle below.
-            has_entry = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+            has_entry = unsafe { Thread32Next(snapshot, &raw mut entry) } != 0;
         };
         // SAFETY: this scope owns the ToolHelp snapshot handle.
         unsafe { CloseHandle(snapshot) };

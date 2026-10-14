@@ -80,13 +80,13 @@ fn write_lc_path_shims_in(dir: &std::path::Path, binary: &str) -> bool {
     let mut ok = true;
     for (name, flag) in [("_lc", "-t"), ("_lc_compress", "-c")] {
         let path = dir.join(name);
-        if let Err(e) = std::fs::write(&path, shim_script(name, binary, flag)) {
+        let written = std::fs::write(&path, shim_script(name, binary, flag));
+        if let Err(e) = &written {
             tracing::debug!("could not write shim {}: {e}", path.display());
             ok = false;
-            continue;
         }
         #[cfg(unix)]
-        {
+        if written.is_ok() {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
         }

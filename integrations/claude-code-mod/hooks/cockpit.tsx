@@ -434,12 +434,9 @@ function parseSnap(text: string): ValueSnap | undefined {
   const projectRoot = str(r, 'project_root')
   if (!sessionId || !projectRoot) return undefined
   const sec = isRec(r['security']) ? r['security'] : {}
-  // lean-ctx session ids end in `p<pid>s<n>`; newer builds also record `host_pid`.
-  const pid = /p(\d+)s\d+$/.exec(sessionId)?.[1]
   return {
     sessionId,
     projectRoot,
-    pid: pid ? Number(pid) : undefined,
     hostPid: typeof r['host_pid'] === 'number' ? (r['host_pid'] as number) : undefined,
     startedAt: str(r, 'started_at'),
     updatedAt: str(r, 'updated_at'),
@@ -456,7 +453,16 @@ function parseSnap(text: string): ValueSnap | undefined {
   }
 }
 
-const inProject = (cwd: string, root: string) => cwd === root || cwd.startsWith(`${root}/`)
+// One spelling per path: Windows hands out backslashes, either drive-letter
+// case and sometimes the `\\?\` verbatim prefix (#2077).
+const normPath = (p: string) => {
+  const s = p.replace(/^\\\\\?\\/, '').replace(/\\/g, '/').replace(/\/+$/, '')
+  return /^[a-z]:(\/|$)/i.test(s) ? s.toLowerCase() : s
+}
+const inProject = (cwd: string, root: string) => {
+  const [c, r] = [normPath(cwd), normPath(root)]
+  return c === r || c.startsWith(`${r}/`)
+}
 const newest = (snaps: ValueSnap[]) => [...snaps].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0]
 
 const countersOf = (s: ValueSnap | undefined) => ({
@@ -498,44 +504,26 @@ async function readBoard($: EngineInterface): Promise<Board> {
   }
 }
 
-// The data directory lean-ctx reports itself, so XDG and custom homes hold.
-async function locate($: EngineInterface): Promise<{ dir: string; cwd: string }> {
-  if (!valueDir) {
+// Our ancestors, nearest first, as lean-ctx sees them from the process that
+// runs it: the agent is among them, whether hooks run in it or in a worker.
+// lean-ctx walks the tree natively; `ps` and `sh` are missing on Windows (#2077).
+let chain: number[] | undefined
+
+// The data directory lean-ctx reports itself, so XDG and custom homes hold,
+// and the ancestors whose sessions serve this conversation.
+async function locate($: EngineInterface): Promise<{ dir: string; cwd: string; hosts: number[] }> {
+  if (!valueDir || !chain) {
     const { exitCode, stdout } = await $.process.run(['lean-ctx', 'prompt-segment', '--json'], { timeoutMs: 15_000 })
     if (exitCode !== 0) throw new Error('lean-ctx prompt-segment failed')
     const parsed: unknown = JSON.parse(stdout)
     const watch = isRec(parsed) ? str(parsed, 'watch') : undefined
     if (!watch) throw new Error('lean-ctx reports no value directory')
-    valueDir = watch.replace(/\/projects\/?$/, '')
+    const hosts = isRec(parsed) && Array.isArray(parsed['hosts']) ? parsed['hosts'] : []
+    valueDir = watch.replace(/[\\/]projects[\\/]?$/, '')
+    chain = hosts.filter((h): h is number => typeof h === 'number')
   }
   cwd ??= await $.session.cwd()
-  return { dir: valueDir, cwd }
-}
-
-// Our ancestors, nearest first, each with the lean-ctx servers it started.
-// The agent process is among them, whether hooks run in it or in a worker.
-type Ancestry = { host: number; servers: Set<number> }[]
-let chain: Ancestry | undefined
-async function ancestry($: EngineInterface): Promise<Ancestry> {
-  const [table, self] = await Promise.all([
-    $.process.run(['ps', '-A', '-o', 'pid=,ppid=,comm='], { timeoutMs: 5_000 }),
-    $.process.run(['sh', '-c', 'echo $PPID'], { timeoutMs: 5_000 }),
-  ])
-  const parent = new Map<number, number>()
-  const servers = new Map<number, Set<number>>()
-  for (const line of table.stdout.split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)
-    if (!m) continue
-    const [pid, ppid] = [Number(m[1]), Number(m[2])]
-    parent.set(pid, ppid)
-    if (/(^|\/)lean-ctx$/.test(m[3] ?? '')) servers.set(ppid, (servers.get(ppid) ?? new Set()).add(pid))
-  }
-  const found: Ancestry = []
-  for (let pid = Number(self.stdout.trim()); pid > 1 && found.length < 8; pid = parent.get(pid) ?? 0) {
-    if (found.some(a => a.host === pid)) break
-    found.push({ host: pid, servers: servers.get(pid) ?? new Set() })
-  }
-  return found
+  return { dir: valueDir, cwd, hosts: chain }
 }
 
 function scheduleRefresh($: EngineInterface) {
@@ -597,12 +585,10 @@ async function refresh($: EngineInterface) {
         // a snapshot mid-write or gone: skip it this round
       }
     }
-    // Nearest ancestor first: its recorded `host_pid`, or (older lean-ctx) the
-    // pid of a lean-ctx server it started, which session ids end with.
-    chain ??= await ancestry($)
+    // Nearest ancestor first: the session whose server recorded it as `host_pid`.
     let snap: ValueSnap | undefined
-    for (const a of chain) {
-      snap = newest(snaps.filter(s => s.hostPid === a.host || (s.pid !== undefined && a.servers.has(s.pid))))
+    for (const host of where.hosts) {
+      snap = newest(snaps.filter(s => s.hostPid === host))
       if (snap) break
     }
     if (!snap) {

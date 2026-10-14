@@ -3,8 +3,6 @@
 export type ValueSnap = {
   sessionId: string
   projectRoot: string
-  /** The lean-ctx server process that wrote it. */
-  pid?: number
   /** The agent process that started that server, when lean-ctx records it. */
   hostPid?: number
   startedAt?: string
