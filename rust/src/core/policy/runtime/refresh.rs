@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 type PolicyResult = Result<Option<Arc<ActivePolicy>>, String>;
 type VerifiedResult = Result<VerifiedPolicy, String>;
 const DEADLINE: Duration = Duration::from_secs(2);
+const BUSY: &str = "policy refresh is unavailable or busy";
+const DEADLINE_EXCEEDED: &str = "policy refresh deadline exceeded";
+/// Pause before the one repeat of a refresh the shared worker could not serve.
+const SETTLE: Duration = Duration::from_millis(50);
 
 #[derive(Clone)]
 pub(super) struct VerifiedPolicy {
@@ -44,7 +48,7 @@ fn worker() -> Option<&'static mpsc::SyncSender<Request>> {
                         let result = if Instant::now() < request.deadline {
                             result
                         } else {
-                            Err("policy refresh deadline exceeded".into())
+                            Err(DEADLINE_EXCEEDED.into())
                         };
                         let _ = request.reply.send(result);
                     }
@@ -69,14 +73,36 @@ pub(super) fn current_verified(root: PathBuf) -> VerifiedResult {
             deadline,
             reply: tx,
         })
-        .map_err(|_| "policy refresh is unavailable or busy")?;
+        .map_err(|_| BUSY)?;
     let result = rx
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .map_err(|_| "policy refresh deadline exceeded")?;
+        .map_err(|_| DEADLINE_EXCEEDED)?;
     if Instant::now() >= deadline {
-        return Err("policy refresh deadline exceeded".into());
+        return Err(DEADLINE_EXCEEDED.into());
     }
     result
+}
+
+/// [`current_verified`], asked once more when the one shared worker was only
+/// busy or late — parallel tool calls queue behind it. Ops telemetry
+/// (3.11.4): `ctx_compose` discarded finished results ("source authority
+/// changed or could not be verified") on a re-check that merely timed out.
+/// Fail-closed is unchanged: only a verified snapshot is ever returned, and a
+/// policy that is invalid or changed fails on the first answer.
+pub(super) fn current_verified_settled(root: &Path) -> VerifiedResult {
+    settled(|| current_verified(root.to_path_buf()))
+}
+
+/// Run `check`, and once more after [`SETTLE`] when it failed only because
+/// the worker was busy or late. Any other answer is final.
+pub(super) fn settled(mut check: impl FnMut() -> VerifiedResult) -> VerifiedResult {
+    match check() {
+        Err(error) if error == BUSY || error == DEADLINE_EXCEEDED => {
+            std::thread::sleep(SETTLE);
+            check()
+        }
+        answer => answer,
+    }
 }
 
 struct Snapshot {
