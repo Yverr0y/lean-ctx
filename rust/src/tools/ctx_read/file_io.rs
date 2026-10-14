@@ -318,9 +318,11 @@ fn open_rooted_nofollow(
     };
 
     let root = crate::core::pathutil::canonicalize_secure(root)?;
-    crate::core::pathjail::jail_path(path, &root)
+    // Open the path the jail checked: a relative path resolves against the
+    // root there, not against the process CWD (the daemon's is not the project).
+    let target = crate::core::pathjail::jail_path(path, &root)
         .map_err(|_| std::io::Error::other("file is outside the rooted read boundary"))?;
-    let file = std::fs::OpenOptions::new().read(true).open(path)?;
+    let file = std::fs::OpenOptions::new().read(true).open(&target)?;
     let mut buffer = vec![0u16; 32_768];
     // SAFETY: the handle is live and buffer is writable for its full length.
     let length = unsafe {
@@ -591,6 +593,18 @@ mod tests {
             std::path::Path::new(&read.canonical_path),
             crate::core::pathutil::canonicalize_secure(&path).unwrap()
         );
+    }
+
+    #[test]
+    fn rooted_read_resolves_a_relative_path_against_the_root_not_the_cwd() {
+        // Config (path_jail) is read from the data dir parallel tests repoint.
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("relative.txt"), "from the root").unwrap();
+
+        let read = read_file_lossy_rooted("relative.txt", &root.path().to_string_lossy()).unwrap();
+
+        assert_eq!(read.content, "from the root");
     }
 
     #[test]

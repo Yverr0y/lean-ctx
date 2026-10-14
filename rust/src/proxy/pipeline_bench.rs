@@ -400,16 +400,25 @@ fn large_mixed_output(turn: usize) -> String {
 mod tests {
     use super::*;
 
+    /// One benchmark run shared by every test here. Four tests running it in
+    /// parallel competed with each other for the CPU and measured that
+    /// contention (1.05 s against the 1 s budget on a busy runner).
+    fn report() -> &'static BenchmarkReport {
+        static REPORT: std::sync::LazyLock<BenchmarkReport> =
+            std::sync::LazyLock::new(run_benchmark);
+        &REPORT
+    }
+
     #[test]
     fn benchmark_runs_without_panicking() {
-        let report = run_benchmark();
+        let report = report();
         assert_eq!(report.results.len(), 5);
         assert!(report.total_tokens_before > report.total_tokens_after);
     }
 
     #[test]
     fn every_scenario_saves_at_least_twenty_percent() {
-        let report = run_benchmark();
+        let report = report();
         let saving_scenarios: Vec<_> = report
             .results
             .iter()
@@ -423,7 +432,7 @@ mod tests {
 
     #[test]
     fn every_scenario_compresses_well_under_a_second() {
-        let report = run_benchmark();
+        let report = report();
         for result in &report.results {
             assert!(
                 result.latency_us < 1_000_000,
@@ -436,8 +445,8 @@ mod tests {
 
     #[test]
     fn pipeline_benchmark_meets_targets() {
-        let report = run_benchmark();
-        print_report(&report);
+        let report = report();
+        print_report(report);
         assert!(
             report.average_savings_pct > 10.0,
             "average savings were only {:.1}% — pipeline must produce >10% savings",

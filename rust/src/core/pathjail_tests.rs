@@ -162,6 +162,28 @@ fn relative_candidate_resolves_against_root_not_cwd() {
     );
 }
 
+/// The same with the jail off: `path_jail = false` (or the `no-jail` build)
+/// returned the relative path as given, so callers opened it against the
+/// process CWD.
+#[test]
+fn relative_candidate_resolves_against_root_with_the_jail_off() {
+    let _iso = crate::core::data_dir::isolated_data_dir();
+    let cfg_path = crate::core::config::Config::path().unwrap();
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    std::fs::write(&cfg_path, "path_jail = false\n").unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub").join("file.rs"), "ok").unwrap();
+
+    let resolved = jail_path(Path::new("sub/file.rs"), &root).unwrap();
+
+    assert_eq!(
+        resolved,
+        canonicalize_or_self(&root.join("sub").join("file.rs"))
+    );
+}
+
 #[test]
 fn ide_allow_dirs_are_registry_derived_and_skip_home() {
     use crate::core::editor_registry::{ConfigType, EditorTarget};

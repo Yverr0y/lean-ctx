@@ -117,6 +117,11 @@ fn oneshot_semantic_search_and_compose_answer_on_a_real_sized_project() {
             "ctx_compose",
             r#"{"task":"check_slew_target slew limit check"}"#,
         ),
+        // #2060: a repeated one-shot compose returns content, never a cache stub.
+        (
+            "ctx_compose",
+            r#"{"task":"check_slew_target slew limit check"}"#,
+        ),
     ];
     let mut failed = false;
     for (tool, json) in cases {
@@ -124,7 +129,10 @@ fn oneshot_semantic_search_and_compose_answer_on_a_real_sized_project() {
         // Results, or an explicit error (a runner without ONNX Runtime
         // cannot embed) — never silence. Roots print without `\\?\`.
         let answered = out.contains("check_slew_target") || out.starts_with("ERR:");
-        failed |= !answered || elapsed > Duration::from_secs(30) || out.contains(r"\\?\");
+        failed |= !answered
+            || elapsed > Duration::from_secs(30)
+            || out.contains(r"\\?\")
+            || out.contains("cross-agent cache ·");
         report.push_str(&format!(
             "\n=== {tool} {json}\nelapsed {elapsed:?}, answered {answered}\n--- stdout (head)\n{}\n--- stderr\n{err}\n",
             out.chars().take(600).collect::<String>()
