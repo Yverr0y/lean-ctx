@@ -1,7 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -675,6 +675,7 @@ pub struct IntrospectState {
     pub total_input_tokens: AtomicU64,
     pub total_bulk_candidate_tokens: AtomicU64,
     pub total_requests: AtomicU64,
+    measurement_window: OnceLock<(Option<u64>, std::time::Instant)>,
     last_persist_epoch: AtomicU64,
 }
 
@@ -686,6 +687,7 @@ impl Default for IntrospectState {
             total_input_tokens: AtomicU64::new(0),
             total_bulk_candidate_tokens: AtomicU64::new(0),
             total_requests: AtomicU64::new(0),
+            measurement_window: OnceLock::new(),
             last_persist_epoch: AtomicU64::new(0),
         }
     }
@@ -693,6 +695,13 @@ impl Default for IntrospectState {
 
 impl IntrospectState {
     pub fn record(&self, breakdown: RequestBreakdown) {
+        self.measurement_window.get_or_init(|| {
+            let started_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_secs());
+            (started_at, std::time::Instant::now())
+        });
         let system_slab_tokens = breakdown.system_prompt_tokens
             + breakdown.rules_tokens
             + breakdown.skills_tokens
@@ -745,11 +754,20 @@ impl IntrospectState {
         let total_bulk_candidate_tokens = self.total_bulk_candidate_tokens.load(Ordering::Relaxed);
         let bulk_share_bps =
             token_share_basis_points(total_bulk_candidate_tokens, total_input_tokens);
+        let (measurement_started_at, measurement_elapsed_seconds) = self
+            .measurement_window
+            .get()
+            .map_or((None, None), |(started_at, start)| {
+                (*started_at, Some(start.elapsed().as_secs()))
+            });
         let payload = serde_json::json!({
             "ts": ts,
             "proxy_active": true,
             "last_breakdown": breakdown_val,
             "cumulative": {
+                "measurement_scope": "process_lifetime",
+                "measurement_started_at_epoch_seconds": measurement_started_at,
+                "measurement_elapsed_seconds": measurement_elapsed_seconds,
                 "total_requests": self.total_requests.load(Ordering::Relaxed),
                 "total_input_tokens": total_input_tokens,
                 "total_system_prompt_tokens": self.total_system_prompt_tokens.load(Ordering::Relaxed),
@@ -801,6 +819,57 @@ pub fn load_persisted(max_age_secs: u64) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cumulative_measurement_window_starts_once_and_resets_with_the_process() {
+        let _data = crate::core::data_dir::isolated_data_dir();
+        let snapshot = crate::core::data_dir::lean_ctx_data_dir()
+            .unwrap()
+            .join("proxy-introspect.json");
+        let read = || -> Value {
+            serde_json::from_str(&std::fs::read_to_string(&snapshot).unwrap()).unwrap()
+        };
+        let state = IntrospectState::default();
+        state.persist(1);
+        assert!(read()["cumulative"]["measurement_elapsed_seconds"].is_null());
+
+        let body = serde_json::json!({
+            "model": "test-model", "messages": [{"role": "user", "content": "window sample"}]
+        });
+        state.record(analyze_request(&body, Provider::OpenAi));
+        let first_start = *state.measurement_window.get().unwrap();
+        state.record(analyze_request(&body, Provider::OpenAi));
+        assert_eq!(*state.measurement_window.get().unwrap(), first_start);
+        state.persist(1);
+        let cumulative = &read()["cumulative"];
+        assert_eq!(cumulative["measurement_scope"], "process_lifetime");
+        assert_eq!(cumulative["total_requests"], 2);
+        assert!(cumulative["measurement_started_at_epoch_seconds"].is_u64());
+        assert!(cumulative["measurement_elapsed_seconds"].is_u64());
+
+        let aged = IntrospectState::default();
+        aged.measurement_window
+            .set((
+                Some(123),
+                std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(90))
+                    .expect("monotonic clock is past 90 seconds"),
+            ))
+            .unwrap();
+        aged.record(analyze_request(&body, Provider::OpenAi));
+        // The elapsed time comes from the monotonic start, not from the
+        // snapshot's save time (`ts` = 1 here, before the recorded start).
+        aged.persist(1);
+        let cumulative = &read()["cumulative"];
+        assert_eq!(cumulative["measurement_started_at_epoch_seconds"], 123);
+        assert!(cumulative["measurement_elapsed_seconds"].as_u64().unwrap() >= 90);
+        assert!(
+            IntrospectState::default()
+                .measurement_window
+                .get()
+                .is_none()
+        );
+    }
 
     #[test]
     fn vision_experiment_gate_uses_post_funnel_bulk_share() {

@@ -709,17 +709,20 @@ pub fn jail_path_with_roots(
     crate::cli::enforce_protected_store_path(&absolute)
         .map_err(|reason| PathJailError::ProtectedContext { reason })?;
 
+    // With the jail off a relative path still means "in the project": the
+    // process CWD (the daemon's) is not the project, so resolve it against
+    // the root here as well.
     #[cfg(feature = "no-jail")]
     {
-        let _ = (jail_root, extra_roots);
-        return Ok(canonicalize_or_self(candidate));
+        let _ = extra_roots;
+        return Ok(canonicalize_or_self(&absolute));
     }
 
     #[allow(unreachable_code)]
     {
         let cfg = crate::core::config::Config::load();
         if cfg.path_jail == Some(false) {
-            return Ok(canonicalize_or_self(candidate));
+            return Ok(canonicalize_or_self(&absolute));
         }
 
         let root = canonicalize_secure(jail_root);

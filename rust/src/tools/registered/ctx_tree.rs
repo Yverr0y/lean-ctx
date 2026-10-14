@@ -180,6 +180,18 @@ mod tests {
 
     #[test]
     fn tree_adapter_records_then_serves_a_cross_agent_reference() {
+        // Delivery config and conversation scope live in process-global
+        // OnceLocks, so a parallel test could pick them first. Run in a fresh
+        // process with legacy same-process delivery and private directories.
+        if crate::test_env::run_with_conversation_scope(
+            "tools::registered::ctx_tree::tests::tree_adapter_records_then_serves_a_cross_agent_reference",
+            false,
+        ) {
+            return;
+        }
+        let _isolated = crate::core::data_dir::isolated_data_dir();
+        let _no_daemon = crate::setup::EnvVarGuard::set("__LEAN_CTX_NO_DAEMON", "1");
+
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("cached.rs"), "fn cached() {}\n").unwrap();
         let path = directory.path().to_string_lossy();

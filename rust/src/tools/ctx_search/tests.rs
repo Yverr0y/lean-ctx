@@ -1,6 +1,62 @@
 use super::*;
 use crate::tools::CrpMode;
 
+// The policy override is process-wide: a parallel test that installs a policy
+// made these searches answer "N sources withheld under policy". Every search
+// here pins "no policy" for its call; these shadow the glob-imported entries.
+
+#[allow(clippy::too_many_arguments)]
+fn handle(
+    pattern: &str,
+    dir: &str,
+    include: Option<&str>,
+    max_results: usize,
+    crp_mode: CrpMode,
+    respect_gitignore: bool,
+    allow_secret_paths: bool,
+    anchored: bool,
+) -> SearchOutcome {
+    let _no_policy = crate::core::policy::runtime::TestPolicyOverride::set(None);
+    super::handle(
+        pattern,
+        dir,
+        include,
+        max_results,
+        crp_mode,
+        respect_gitignore,
+        allow_secret_paths,
+        anchored,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_filtered(
+    pattern: &str,
+    dir: &str,
+    include: Option<&str>,
+    max_results: usize,
+    crp_mode: CrpMode,
+    respect_gitignore: bool,
+    allow_secret_paths: bool,
+    anchored: bool,
+    exclude: Option<&str>,
+    exclude_pattern: Option<&str>,
+) -> SearchOutcome {
+    let _no_policy = crate::core::policy::runtime::TestPolicyOverride::set(None);
+    super::handle_filtered(
+        pattern,
+        dir,
+        include,
+        max_results,
+        crp_mode,
+        respect_gitignore,
+        allow_secret_paths,
+        anchored,
+        exclude,
+        exclude_pattern,
+    )
+}
+
 /// Determinism contract (#498): identical search over identical files
 /// must produce byte-identical output — a prerequisite for provider
 /// prompt-cache hits on repeated tool results.
@@ -223,7 +279,8 @@ fn warm_index_and_content_cache_path_returns_correct_matches() {
         "index should warm for a small clean corpus"
     );
 
-    let out = handle(
+    // `super::handle`: this test already holds the pin, which is not reentrant.
+    let out = super::handle(
         "authenticate",
         &root,
         None,
@@ -680,6 +737,31 @@ fn include_glob_recursive_path_pattern() {
     assert!(
         !out.contains("top.rs"),
         "root file outside src/ must be excluded: {out}"
+    );
+}
+
+/// #2059 as reported: `path` = `Cargo.toml`, `include` = `*.toml`.
+#[test]
+fn explicit_manifest_file_matches_its_include_glob() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("Cargo.toml");
+    std::fs::write(&file, "[package]\nname = \"manifest_include_2059\"\n").unwrap();
+
+    let out = handle(
+        "^\\[package\\]",
+        file.to_string_lossy().as_ref(),
+        Some("*.toml"),
+        10,
+        CrpMode::Off,
+        true,
+        true,
+        false,
+    )
+    .text;
+
+    assert!(
+        out.contains("[package]") && out.contains("(scanned 1)"),
+        "the explicit Cargo.toml must be scanned: {out}"
     );
 }
 

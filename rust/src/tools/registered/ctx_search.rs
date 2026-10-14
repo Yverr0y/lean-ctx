@@ -1429,3 +1429,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "ctx_search_mcp_tests.rs"]
+mod mcp_tests;

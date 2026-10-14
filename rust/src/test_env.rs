@@ -14,7 +14,20 @@ use std::ffi::OsStr;
 /// Runs one exact test in a fresh process so its cached scope policy cannot be
 /// inherited from the parent suite. Returns false only inside that child.
 pub(crate) fn run_with_conversation_scope(test_name: &str, enabled: bool) -> bool {
-    const CHILD: &str = "LEAN_CTX_TEST_CONVERSATION_SCOPE_CASE";
+    run_in_own_process(
+        test_name,
+        &[(
+            "LEAN_CTX_CONVERSATION_SCOPE",
+            if enabled { "1" } else { "0" },
+        )],
+    )
+}
+
+/// Runs one exact test alone in a fresh process, for tests that change
+/// process-wide state other tests read without a lock (the policy override,
+/// for one). Returns false only inside that child.
+pub(crate) fn run_in_own_process(test_name: &str, env: &[(&str, &str)]) -> bool {
+    const CHILD: &str = "LEAN_CTX_TEST_ISOLATED_CASE";
     if std::env::var(CHILD).as_deref() == Ok(test_name) {
         return false;
     }
@@ -22,12 +35,9 @@ pub(crate) fn run_with_conversation_scope(test_name: &str, enabled: bool) -> boo
     let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", test_name, "--nocapture"])
         .env(CHILD, test_name)
-        .env(
-            "LEAN_CTX_CONVERSATION_SCOPE",
-            if enabled { "1" } else { "0" },
-        )
+        .envs(env.iter().copied())
         .output()
-        .expect("isolated conversation-scope test");
+        .expect("isolated test process");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success() && stdout.contains("test result: ok. 1 passed"),
