@@ -29,7 +29,7 @@ pub(crate) const IDENTITY_CN: &str = "lean-ctx-codesign";
 pub(crate) const CODESIGN_IDENTIFIER: &str = "com.leanctx.cli";
 
 const SECURITY_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
-const CODESIGN_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+const CODESIGN_COMMAND_TIMEOUT: Duration = Duration::from_mins(1);
 const COMMAND_OUTPUT_LIMIT: usize = 64 * 1024;
 
 /// Which signing path [`sign_binary`] took.
