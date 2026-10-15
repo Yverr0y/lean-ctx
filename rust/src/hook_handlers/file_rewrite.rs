@@ -970,9 +970,8 @@ mod tests {
     /// nested POSIX quoting then broke apart in the inner shell.
     #[test]
     fn own_wrap_by_binary_path_is_never_wrapped_again() {
-        let _lock = crate::core::data_dir::test_env_lock();
-        crate::test_env::set_var("LEAN_CTX_SHELL_SECURITY", "enforce");
-        crate::test_env::set_var("LEAN_CTX_SHELL_ALLOWLIST_OVERRIDE", "git,python");
+        // Default allowlist and mode: no process-wide env override, which would
+        // leak into parallel rewrite tests that hold no lock.
         let outcomes: Vec<_> = [
             "C:/Users/User/AppData/Roaming/npm/node_modules/lean-ctx-bin/bin/lean-ctx.exe",
             "C:/Users/First Last/AppData/Roaming/npm/node_modules/lean-ctx-bin/bin/lean-ctx.exe",
@@ -989,8 +988,6 @@ mod tests {
             )
         })
         .collect();
-        crate::test_env::remove_var("LEAN_CTX_SHELL_ALLOWLIST_OVERRIDE");
-        crate::test_env::remove_var("LEAN_CTX_SHELL_SECURITY");
 
         for (once, allowlisted, rewritten, wrap_again, reason) in outcomes {
             assert!(
