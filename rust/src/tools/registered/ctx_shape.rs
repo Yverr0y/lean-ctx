@@ -13,9 +13,10 @@ use crate::tool_defs::tool_def;
 /// and the result flows through the same dispatch pipeline as every `ctx_*`
 /// output (sensitivity floor, policy-pack redaction, input filters).
 ///
-/// Host-only surface: a host extension calls it directly (`$.mcp.call`); it is
-/// never advertised and refused through `ctx_call` — see
-/// `dynamic_tools::INTERNAL_HOST_TOOLS`.
+/// Host-only surface: a host extension calls it through `ctx_call` (`$.mcp.call`
+/// in Claude Code 2.1.296+ only reaches listed tools, #2089); it is never
+/// advertised, and every gate refusal on it is an error so the host keeps the
+/// native output — see `dynamic_tools::INTERNAL_HOST_TOOLS`.
 pub struct CtxShapeTool;
 
 /// Below this many **bytes** the shaping gain cannot pay for the call. Bytes,

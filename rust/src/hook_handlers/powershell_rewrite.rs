@@ -12,7 +12,7 @@
 //! (`read`/`grep`/`ls`) quoted for PowerShell, denied when the allowlist blocks
 //! it in `enforce` mode, or left to PowerShell untouched.
 
-use super::file_rewrite::{direct_rewrite, is_compound, passes_rewrite_guards};
+use super::file_rewrite::{direct_rewrite, is_compound, is_leanctx_call, passes_rewrite_guards};
 use super::{shell_quote, shell_tokenize};
 
 /// True when a host tool name is a PowerShell tool (Claude Code's `PowerShell`,
@@ -43,7 +43,7 @@ pub(super) fn decide(cmd: &str, binary: &str) -> PowerShellDecision {
     // wrap cannot carry PowerShell (see the module docs), so enforce here and
     // refuse instead. `check_shell_allowlist` blocks only in `enforce` mode;
     // `warn` logs and `off` skips, exactly as the wrap would have.
-    if !cmd.starts_with("lean-ctx ")
+    if !is_leanctx_call(cmd, binary)
         && let Err(msg) = crate::core::shell_allowlist::check_shell_allowlist(cmd)
     {
         return PowerShellDecision::Deny(msg.to_string());

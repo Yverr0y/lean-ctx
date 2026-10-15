@@ -50,14 +50,10 @@ pub(crate) fn resolve_inner(args: Option<&Map<String, Value>>) -> Result<Resolve
             None,
         ));
     }
-    // Host hooks serve extensions directly and are not callable through the
-    // agent-facing ctx_call path.
-    if crate::server::dynamic_tools::INTERNAL_HOST_TOOLS.contains(&inner.as_str()) {
-        return Err(ErrorData::invalid_params(
-            format!("{inner} is an internal host hook and cannot be called via ctx_call"),
-            None,
-        ));
-    }
+    // Internal host hooks (ctx_shape) stay reachable here on purpose: hosts that
+    // only call tools the server lists (Claude Code 2.1.296+ `$.mcp.call`)
+    // reach an unlisted hook through the listed ctx_call (#2089). They remain
+    // out of tools/list and discovery.
     let arguments = match args.and_then(|args| args.get("arguments")) {
         None | Some(Value::Null) => {
             if let Some(args) = args

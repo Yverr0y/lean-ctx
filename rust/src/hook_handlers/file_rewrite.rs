@@ -72,7 +72,7 @@ pub(super) fn compute_rewrite() -> String {
                 "rewritable command",
             );
             build_dual_rewrite_output(tool_args.as_ref(), &rewritten)
-        } else if needs_enforcement_wrap(&cmd) {
+        } else if needs_enforcement_wrap(&cmd, &binary) {
             // #1408: Commands that bypass compression-routing but violate the
             // shell allowlist must still be wrapped for enforcement. Without
             // this, compound commands (`true && docker --version`) and
@@ -92,7 +92,7 @@ pub(super) fn compute_rewrite() -> String {
                 &tool_name,
                 Route::Native,
                 &cmd,
-                rewrite_skip_reason(&cmd),
+                rewrite_skip_reason(&cmd, &binary),
             );
             // #1285: native passthrough was structurally invisible — only
             // ctx_* calls reach metering.jsonl, so a session leaking reads
@@ -166,8 +166,8 @@ fn record_native_passthrough() {
 /// Human-readable reason a shell command was left to the native tool. Mirrors
 /// the `None` branches of [`rewrite_candidate`] so #520's debug log can explain
 /// *why* a call fell back to native instead of routing through lean-ctx.
-pub(super) fn rewrite_skip_reason(cmd: &str) -> &'static str {
-    if cmd.starts_with("lean-ctx ") {
+pub(super) fn rewrite_skip_reason(cmd: &str, binary: &str) -> &'static str {
+    if is_leanctx_call(cmd, binary) {
         "already a lean-ctx command"
     } else if cmd.contains("<<") {
         "heredoc cannot be rewritten safely"
@@ -187,7 +187,13 @@ pub(super) fn is_rewritable(cmd: &str) -> bool {
 ///
 /// Conditions: shell security is active (not `Off`), the command would fail the
 /// allowlist, and it can survive the quoting round-trip (no heredocs).
-fn needs_enforcement_wrap(cmd: &str) -> bool {
+///
+/// A command that already runs lean-ctx — bare or by the binary path our own
+/// rewrites emit (`C:/…/lean-ctx.exe -c '…'` on Windows) — enforces the
+/// allowlist itself. Wrapping it again nests one more `-c` layer every time the
+/// hook sees it, and the nested POSIX quoting falls apart in the inner shell
+/// (#2088).
+fn needs_enforcement_wrap(cmd: &str, binary: &str) -> bool {
     use crate::core::shell_allowlist::{ShellSecurity, passes_enforced};
 
     if ShellSecurity::resolve() == ShellSecurity::Off {
@@ -196,7 +202,7 @@ fn needs_enforcement_wrap(cmd: &str) -> bool {
     if cmd.contains("<<") {
         return false;
     }
-    if cmd.starts_with("lean-ctx ") {
+    if is_leanctx_call(cmd, binary) {
         return false;
     }
     !passes_enforced(cmd)
@@ -819,7 +825,8 @@ pub(super) fn build_rewrite_compound(cmd: &str, binary: &str) -> Option<String> 
     // new block" concern only applies when the user has shell_security = off —
     // in that case lean-ctx -c won't enforce anyway.
     if commands.iter().any(|c| is_rewritable(c))
-        && (crate::core::shell_allowlist::passes_enforced(cmd) || needs_enforcement_wrap(cmd))
+        && (crate::core::shell_allowlist::passes_enforced(cmd)
+            || needs_enforcement_wrap(cmd, binary))
     {
         return Some(wrap_single_command(cmd, binary));
     }
@@ -956,6 +963,42 @@ fn is_self_install_command(cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::rewrite_candidate;
+
+    /// #2088: the hook's own `-c` wrap, spelled with the binary path it emits
+    /// (Windows npm install, with and without a space in the path), must never
+    /// be wrapped again. Each hook pass used to add one more `-c` layer, and the
+    /// nested POSIX quoting then broke apart in the inner shell.
+    #[test]
+    fn own_wrap_by_binary_path_is_never_wrapped_again() {
+        // Default allowlist and mode: no process-wide env override, which would
+        // leak into parallel rewrite tests that hold no lock.
+        let outcomes: Vec<_> = [
+            "C:/Users/User/AppData/Roaming/npm/node_modules/lean-ctx-bin/bin/lean-ctx.exe",
+            "C:/Users/First Last/AppData/Roaming/npm/node_modules/lean-ctx-bin/bin/lean-ctx.exe",
+        ]
+        .into_iter()
+        .map(|binary| {
+            let once = super::wrap_single_command("python parse_elf.py", binary);
+            (
+                once.clone(),
+                crate::core::shell_allowlist::passes_enforced(&once),
+                rewrite_candidate(&once, binary),
+                super::needs_enforcement_wrap(&once, binary),
+                super::rewrite_skip_reason(&once, binary),
+            )
+        })
+        .collect();
+
+        for (once, allowlisted, rewritten, wrap_again, reason) in outcomes {
+            assert!(
+                !allowlisted,
+                "precondition: the path form itself is not allowlisted: {once}"
+            );
+            assert_eq!(rewritten, None, "{once}");
+            assert!(!wrap_again, "must not nest another -c layer: {once}");
+            assert_eq!(reason, "already a lean-ctx command", "{once}");
+        }
+    }
 
     #[test]
     fn disabled_prefix_skips_rewrite() {

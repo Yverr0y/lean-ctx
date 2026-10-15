@@ -390,7 +390,10 @@ export const register: Register = (on, options) => {
 // stdout goes through lean-ctx's command-aware compressor (`ctx_shape`, which
 // also applies lean-ctx's secret redaction and output filters) instead of
 // denying the call and forcing a round trip to ctx_shell. Lossy results end
-// with a recovery handle. stderr is kept verbatim. Fail-open everywhere.
+// with a recovery handle. stderr is kept verbatim. Fail-open everywhere: any
+// refusal on the way (workflow, role, budget) comes back as an error.
+// ctx_shape is not listed, and `$.mcp.call` only reaches listed tools (Claude
+// Code 2.1.296+), so the call goes through the listed `ctx_call` (#2089).
 async function shapeBash(
   $: EngineInterface,
   command: string | undefined,
@@ -413,11 +416,9 @@ async function shapeBash(
     // engine takes its success path (folds build/test noise); otherwise it gets
     // no exit code and keeps the unknown-outcome guard.
     const exitCode = record.returnCodeInterpretation ? {} : { exit_code: 0 };
-    const shaped = await $.mcp.call(leanServer, "ctx_shape", {
-      tool: "Bash",
-      command,
-      output: stdout,
-      ...exitCode,
+    const shaped = await $.mcp.call(leanServer, "ctx_call", {
+      name: "ctx_shape",
+      arguments: { tool: "Bash", command, output: stdout, ...exitCode },
     });
     if (shaped.isError) return result;
     const text = mcpText(shaped);
