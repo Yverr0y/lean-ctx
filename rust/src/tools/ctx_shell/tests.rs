@@ -760,43 +760,68 @@ fn a_download_target_through_a_literal_variable_is_judged_where_it_lands() {
 /// scratch-then-`mv` was the only route. The reporter's forms now pass.
 #[test]
 fn a_download_writes_where_output_capture_may() {
-    let project = "/Users/me/promo/tts";
-    let roots = vec![project.to_string()];
+    // An absolute root on every platform: `/Users/…` is not absolute on Windows.
+    let home = if cfg!(windows) {
+        "C:/Users/me"
+    } else {
+        "/Users/me"
+    };
+    let project = format!("{home}/promo/tts");
+    let other = format!("{home}/other");
+    let roots = vec![project.clone()];
     let check = |cmd: &str, cwd: Option<&str>| validate_command_in_cwd(cmd, &roots, None, cwd);
     for (cmd, cwd) in [
         (
-            "D=/Users/me/promo/tts; B=https://h/x; curl -sL -o $D/model/m.onnx $B/m.onnx",
+            format!("D={project}; B=https://h/x; curl -sL -o $D/model/m.onnx $B/m.onnx"),
             None,
         ),
         (
-            "curl -sL -o /Users/me/promo/tts/model/v.npz https://h/v.npz",
+            format!("curl -sL -o {project}/model/v.npz https://h/v.npz"),
             None,
         ),
-        ("curl -sL -o model/m.onnx https://h/m.onnx", Some(project)),
-        ("cd model && curl -sLO https://h/m.onnx", Some(project)),
-        ("wget -P model https://h/m.onnx", Some(project)),
         (
-            "dd if=/dev/zero of=model/blank.bin bs=1 count=1",
-            Some(project),
+            "curl -sL -o model/m.onnx https://h/m.onnx".to_string(),
+            Some(project.as_str()),
         ),
-        ("curl -sL -o /tmp/shot.png https://e/x", Some(project)),
+        (
+            "cd model && curl -sLO https://h/m.onnx".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "wget -P model https://h/m.onnx".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "dd if=/dev/zero of=model/blank.bin bs=1 count=1".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "curl -sL -o /tmp/shot.png https://e/x".to_string(),
+            Some(project.as_str()),
+        ),
     ] {
-        assert!(check(cmd, cwd).is_none(), "{cmd}: {:?}", check(cmd, cwd));
+        assert!(check(&cmd, cwd).is_none(), "{cmd}: {:?}", check(&cmd, cwd));
     }
     for (cmd, cwd) in [
         (
-            "curl -sL -o /Users/me/other/m.onnx https://h/m.onnx",
-            Some(project),
+            format!("curl -sL -o {other}/m.onnx https://h/m.onnx"),
+            Some(project.as_str()),
         ),
         (
-            "curl -sL -o ../../other/m.onnx https://h/m.onnx",
-            Some(project),
+            "curl -sL -o ../../other/m.onnx https://h/m.onnx".to_string(),
+            Some(project.as_str()),
         ),
-        ("curl -sL -o $UNSET/m.onnx https://h/m.onnx", Some(project)),
-        ("curl -sL -o model/m.onnx https://h/m.onnx", None),
-        ("wget https://h/m.onnx", Some("/Users/me/other")),
+        (
+            "curl -sL -o $UNSET/m.onnx https://h/m.onnx".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "curl -sL -o model/m.onnx https://h/m.onnx".to_string(),
+            None,
+        ),
+        ("wget https://h/m.onnx".to_string(), Some(other.as_str())),
     ] {
-        let msg = check(cmd, cwd).unwrap_or_else(|| panic!("must stay refused: {cmd}"));
+        let msg = check(&cmd, cwd).unwrap_or_else(|| panic!("must stay refused: {cmd}"));
         assert!(
             msg.contains("may write where output capture may") && msg.contains("project"),
             "the refusal states the rule it applies: {msg}"
