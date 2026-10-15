@@ -426,15 +426,16 @@ pub fn generate_hook_fish(binary: &str) -> String {
         end\n\
         \n\
         # Exit status 0 = ON, 1 = OFF/DISABLED; LEAN_CTX_ENABLED=0 is OFF (#1971).\n\
+        # Answers on a pipe too: an agent harness captures stdout (#2092).\n\
         function lean-ctx-status\n\
         \tif set -q LEAN_CTX_DISABLED\n\
-        \t\tisatty stdout; and echo 'lean-ctx: DISABLED (LEAN_CTX_DISABLED is set)'\n\
+        \t\techo 'lean-ctx: DISABLED (LEAN_CTX_DISABLED is set)'\n\
         \t\treturn 1\n\
         \telse if set -q LEAN_CTX_ENABLED; and test \"$LEAN_CTX_ENABLED\" != 0\n\
-        \t\tisatty stdout; and echo 'lean-ctx: ON'\n\
+        \t\techo 'lean-ctx: ON'\n\
         \t\treturn 0\n\
         \telse\n\
-        \t\tisatty stdout; and echo 'lean-ctx: OFF'\n\
+        \t\techo 'lean-ctx: OFF'\n\
         \t\treturn 1\n\
         \tend\n\
         end\n\
@@ -490,6 +491,13 @@ pub fn generate_hook_posix(binary: &str) -> String {
     format!(
         r#"# lean-ctx shell hook — smart shell mode (track-by-default)
 _lean_ctx_cmds=({alias_list})
+
+# Bash expands aliases only in interactive shells. Agent harnesses run their
+# Bash tool non-interactively (OpenCode through BASH_ENV), where every alias
+# below would be defined but never used (#2092). zsh expands them in both.
+if [ -n "${{BASH_VERSION:-}}" ]; then
+    shopt -s expand_aliases
+fi
 
 # Everything an alias or a user command reaches is named without a leading
 # underscore: agent harnesses that snapshot + replay the shell (Claude Code's
@@ -595,15 +603,17 @@ lean-ctx-raw() {{
 
 # Exit status 0 = ON, 1 = OFF/DISABLED. lean-ctx-off exports
 # LEAN_CTX_ENABLED=0, so a set-but-zero value is OFF, not ON (#1971).
+# Called on purpose, so it answers on a pipe too: an agent harness captures
+# stdout, and a silent status could not be told from a missing hook (#2092).
 lean-ctx-status() {{
     if [ -n "${{LEAN_CTX_DISABLED:-}}" ]; then
-        [ -t 1 ] && echo "lean-ctx: DISABLED (LEAN_CTX_DISABLED is set)"
+        echo "lean-ctx: DISABLED (LEAN_CTX_DISABLED is set)"
         return 1
     elif [ "${{LEAN_CTX_ENABLED:-0}}" != "0" ]; then
-        [ -t 1 ] && echo "lean-ctx: ON"
+        echo "lean-ctx: ON"
         return 0
     else
-        [ -t 1 ] && echo "lean-ctx: OFF"
+        echo "lean-ctx: OFF"
         return 1
     fi
 }}
@@ -1103,6 +1113,58 @@ export EDITOR=vim
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("on=0"), "status after on: {stdout}");
         assert!(stdout.contains("off=1"), "status after off: {stdout}");
+        // #2092: stdout is a pipe here, as in every agent harness.
+        assert!(
+            stdout.contains("lean-ctx: ON\non=0") && stdout.contains("lean-ctx: OFF\noff=1"),
+            "status must answer on a pipe: {stdout}"
+        );
+    }
+
+    /// #2092: OpenCode runs its Bash tool as `bash -c` with the hook in
+    /// `BASH_ENV` — a non-interactive shell, where bash defines aliases but
+    /// never expands them. Every intercepted command ran raw, silently.
+    #[cfg(unix)]
+    #[test]
+    fn posix_hook_intercepts_in_a_non_interactive_bash_env_shell() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if std::process::Command::new("bash")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        assert!(crate::rewrite_registry::shell_alias_list().contains("git"));
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("lean-ctx");
+        std::fs::write(&fake, "#!/bin/sh\necho \"via-lean-ctx $*\"\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let hook = dir.path().join("shell-hook.bash");
+        std::fs::write(&hook, generate_hook_posix(&fake.to_string_lossy())).unwrap();
+        let path = format!(
+            "{}:{}",
+            dir.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg("git --version")
+            .env("BASH_ENV", &hook)
+            .env("PATH", path)
+            .env("LEAN_CTX_AGENT", "1")
+            .env("LEAN_CTX_SHELL_ACTIVATION", "always")
+            .env_remove("LEAN_CTX_ACTIVE")
+            .env_remove("LEAN_CTX_DISABLED")
+            .env_remove("LEAN_CTX_ENABLED")
+            .env_remove("LEAN_CTX_NO_HOOK")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("via-lean-ctx -t git --version"),
+            "git must route through lean-ctx: stdout={stdout} stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]
