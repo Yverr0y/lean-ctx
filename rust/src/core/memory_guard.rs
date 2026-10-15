@@ -400,15 +400,15 @@ mod rjem {
 
     unsafe extern "C" {
         #[link_name = "_rjem_malloc"]
-        pub fn malloc(size: usize) -> *mut c_void;
+        pub(super) fn malloc(size: usize) -> *mut c_void;
         #[link_name = "_rjem_calloc"]
-        pub fn calloc(count: usize, size: usize) -> *mut c_void;
+        pub(super) fn calloc(count: usize, size: usize) -> *mut c_void;
         #[link_name = "_rjem_realloc"]
-        pub fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
+        pub(super) fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
         #[link_name = "_rjem_free"]
-        pub fn free(ptr: *mut c_void);
+        pub(super) fn free(ptr: *mut c_void);
         #[link_name = "_rjem_mallctl"]
-        pub fn mallctl(
+        pub(super) fn mallctl(
             name: *const c_char,
             oldp: *mut c_void,
             oldlenp: *mut usize,
