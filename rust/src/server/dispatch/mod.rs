@@ -51,6 +51,18 @@ impl LeanCtxServer {
             }
         }
 
+        // A host replaces a native tool's output with a host hook's success
+        // body, so a gate refusal on such a call must be an error: then the host
+        // keeps the original output instead of a block message (#2089).
+        let host_hook = crate::server::dynamic_tools::targets_internal_host_tool(name, args);
+        let refuse = |text: String| {
+            if host_hook {
+                Err(ErrorData::invalid_request(text, None))
+            } else {
+                Ok((text, 0, None, None))
+            }
+        };
+
         let agent_id = self
             .agent_id
             .read()
@@ -61,12 +73,7 @@ impl LeanCtxServer {
             if let crate::core::a2a::rate_limiter::RateLimitResult::Limited { retry_after_ms } =
                 crate::core::a2a::rate_limiter::check_rate_limit(&agent_id, name)
             {
-                return Ok((
-                    format_rate_limited(name, &agent_id, retry_after_ms, args),
-                    0,
-                    None,
-                    None,
-                ));
+                return refuse(format_rate_limited(name, &agent_id, retry_after_ms, args));
             }
         }
 
@@ -83,11 +90,11 @@ impl LeanCtxServer {
                 if let crate::core::a2a::rate_limiter::RateLimitResult::Limited { retry_after_ms } =
                     crate::core::a2a::rate_limiter::check_rate_limit(&agent_id, &inner)
                 {
-                    return Ok((
-                        format_rate_limited(&inner, &agent_id, retry_after_ms, arg_map.as_ref()),
-                        0,
-                        None,
-                        None,
+                    return refuse(format_rate_limited(
+                        &inner,
+                        &agent_id,
+                        retry_after_ms,
+                        arg_map.as_ref(),
                     ));
                 }
 
@@ -100,7 +107,7 @@ impl LeanCtxServer {
                         .first()
                         .and_then(|c| c.as_text())
                         .map_or_else(|| "Blocked by role policy".to_string(), |t| t.text.clone());
-                    return Ok((msg, 0, None, None));
+                    return refuse(msg);
                 }
 
                 if !super::WORKFLOW_PASSTHROUGH_TOOLS.contains(&inner.as_str()) {
@@ -118,16 +125,11 @@ impl LeanCtxServer {
                                 let mut shown = allowed.clone();
                                 shown.sort();
                                 shown.truncate(30);
-                                return Ok((
-                                    format!(
-                                        "Tool '{inner}' blocked by workflow '{}' (state: {}). Allowed: {}. Use ctx_workflow(action=\"stop\") to exit.",
-                                        run.spec.name,
-                                        run.current,
-                                        shown.join(", ")
-                                    ),
-                                    0,
-                                    None,
-                                    None,
+                                return refuse(format!(
+                                    "Tool '{inner}' blocked by workflow '{}' (state: {}). Allowed: {}. Use ctx_workflow(action=\"stop\") to exit.",
+                                    run.spec.name,
+                                    run.current,
+                                    shown.join(", ")
                                 ));
                             }
                         }

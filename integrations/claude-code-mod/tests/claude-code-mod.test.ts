@@ -97,6 +97,9 @@ test("native Bash stdout is shaped through ctx_shape and fails open", async ($, 
     return fields.command === "small" ? bashResult("ok\n") : bashResult(big);
   });
   on("mcp.call", ($, event) => {
+    // ctx_shape is unlisted; Claude Code 2.1.296+ only calls listed tools,
+    // so the mod reaches it through ctx_call (#2089).
+    expect(event.tool).toBe("ctx_call");
     shapeCalls.push(event.args as Record<string, unknown>);
     if (shaper === "error") return { deny: "shaper down" };
     const text = shaper === "longer" ? big + "x" : "Compiling 200 crates\n[lean-ctx: full original at /tmp/h]";
@@ -114,7 +117,10 @@ test("native Bash stdout is shaped through ctx_shape and fails open", async ($, 
   const shapedRecord = shaped.result as Record<string, unknown>;
   expect(String(shapedRecord.stdout)).toContain("Compiling 200 crates");
   expect(shapedRecord.stderr).toBe("warning: kept");
-  expect(shapeCalls[0]).toEqual({ tool: "Bash", command: "cargo build", output: big, exit_code: 0 });
+  expect(shapeCalls[0]).toEqual({
+    name: "ctx_shape",
+    arguments: { tool: "Bash", command: "cargo build", output: big, exit_code: 0 },
+  });
 
   const small = await $.tool.call({ tool: "Bash", command: "small" });
   expect((small.result as Record<string, unknown>).stdout).toBe("ok\n");

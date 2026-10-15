@@ -63,6 +63,15 @@ enum McpDispatched {
     },
 }
 
+/// A gate refusal (role, policy, workflow, loop throttle, budget) on a call to
+/// an internal host hook. The host replaces a native tool's output with the
+/// hook's success body, so the refusal must read as an error: the host then
+/// keeps the original output instead of the block message (#2089).
+fn host_hook_refusal(mut result: CallToolResult) -> CallToolResult {
+    result.is_error = Some(true);
+    result
+}
+
 struct McpProcessedCall {
     result: CallToolResult,
     pipeline: Option<super::pipeline::McpProcessed>,
@@ -568,7 +577,11 @@ impl LeanCtxServer {
                 self.loop_detector.write(),
             )
             .await;
-            if let Ok(mut detector) = detector_timeout {
+            if crate::server::dynamic_tools::INTERNAL_HOST_TOOLS.contains(&guard_name) {
+                // A host hook shapes output of a native call the agent already
+                // made; repeating `cargo test` is not a lean-ctx loop (#2089).
+                crate::core::loop_detection::ThrottleResult::default()
+            } else if let Ok(mut detector) = detector_timeout {
                 let is_search =
                     crate::core::loop_detection::LoopDetector::is_search_tool(guard_name);
                 let is_search_shell = guard_name == "ctx_shell" && {
@@ -776,7 +789,17 @@ impl crate::core::execution_lifecycle::ExecutionDriver for McpDriver<'_> {
             .entitlements
             .take()
             .expect("MCP entitlements consumed once");
-        self.prepared = Some(self.server.prepare_tool_call(request, entitlements).await?);
+        let host_hook = crate::server::dynamic_tools::targets_internal_host_tool(
+            request.name.as_ref(),
+            request.arguments.as_ref(),
+        );
+        let prepared = self.server.prepare_tool_call(request, entitlements).await?;
+        self.prepared = Some(match prepared {
+            PreparedCallResult::Terminal(result, reason) if host_hook => {
+                PreparedCallResult::Terminal(host_hook_refusal(result), reason)
+            }
+            other => other,
+        });
         Ok(crate::core::execution_lifecycle::StageDisposition::Applied)
     }
 
@@ -885,9 +908,14 @@ impl crate::core::execution_lifecycle::ExecutionDriver for McpDriver<'_> {
                 // including the inner tool carried by ctx_call, is dispatched.
                 let (guard_name, guard_args) =
                     crate::tools::registered::ctx_call::resolve(&call.name, call.args.as_ref())?;
-                if let Some(denied) = LeanCtxServer::guard_role_and_policy(&guard_name)
+                if let Some(mut denied) = LeanCtxServer::guard_role_and_policy(&guard_name)
                     .or_else(|| LeanCtxServer::guard_egress(&guard_name, guard_args.as_ref()))
                 {
+                    if crate::server::dynamic_tools::INTERNAL_HOST_TOOLS
+                        .contains(&guard_name.as_str())
+                    {
+                        denied = host_hook_refusal(denied);
+                    }
                     return Ok((
                         McpDispatched::Terminal(denied, "policy changed before dispatch"),
                         crate::core::execution_lifecycle::StageDisposition::Applied,
@@ -1360,6 +1388,58 @@ mod tests {
             assert_eq!(server.background_tick.load(Ordering::Relaxed), expected);
         }
         assert_eq!(server.call_count.load(Ordering::Relaxed), 0);
+    }
+
+    /// #2089: Claude Code 2.1.296+ only lets a mod call listed tools, so the mod
+    /// reaches the unlisted ctx_shape through ctx_call. The reporter's native
+    /// Bash output must come back shaped, as a success, with no decoration the
+    /// mod would splice into stdout.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctx_shape_through_ctx_call_shapes_native_output() {
+        use std::fmt::Write as _;
+
+        let _data_dir = crate::core::data_dir::isolated_data_dir();
+        let root = env!("CARGO_MANIFEST_DIR").to_string();
+        let server = crate::tools::LeanCtxServer::new_with_project_root(Some(&root));
+        *server.presence_agent_id.write().await = Some("shape-test".to_string());
+        let mut output = String::new();
+        for i in 1..=150 {
+            let _ = writeln!(
+                output,
+                "2026-10-14T20:00:00Z INFO [build] compiling package github.com/example/pkg{} step {i} ok",
+                i % 7
+            );
+        }
+        let request: rmcp::model::CallToolRequestParams =
+            serde_json::from_value(serde_json::json!({
+                "name": "ctx_call",
+                "arguments": {"name": "ctx_shape", "arguments": {
+                    "tool": "Bash",
+                    "command": "for i in $(seq 1 150); do echo \"… step $i ok\"; done",
+                    "output": output,
+                    "exit_code": 0,
+                }},
+            }))
+            .unwrap();
+
+        let result = server.call_tool_guarded(request).await.unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        let text = result
+            .content
+            .iter()
+            .filter_map(|block| block.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        assert!(
+            text.len() < output.len(),
+            "native output must shrink: {} >= {}",
+            text.len(),
+            output.len()
+        );
+        // The mod splices the body into stdout as-is: nothing may precede it.
+        assert!(
+            text.starts_with(output.lines().next().unwrap()),
+            "the body must start with the native output, undecorated: {text}"
+        );
     }
 
     #[test]

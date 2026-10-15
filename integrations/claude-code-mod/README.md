@@ -120,7 +120,8 @@ and stays inert when no lean-ctx MCP server is connected.
 A mod runs inside Claude Code with your permissions. This one only calls the
 mods API methods the validator lists below; it reaches lean-ctx through Claude
 Code's own MCP connection (`$.mcp.call`), never through a shell or the network.
-`ctx_shape` is an internal host hook: callable, but never advertised to agents.
+`ctx_shape` is an internal host hook: never advertised to agents; the mod reaches
+it through the listed `ctx_call`, because `$.mcp.call` only calls listed tools.
 
 ## Develop
 

@@ -148,19 +148,22 @@ fn rewrite_skip_reason_tracks_candidate_none_branches() {
 
     let already = "lean-ctx read x";
     assert!(rewrite_candidate(already, binary).is_none());
-    assert_eq!(rewrite_skip_reason(already), "already a lean-ctx command");
+    assert_eq!(
+        rewrite_skip_reason(already, binary),
+        "already a lean-ctx command"
+    );
 
     let heredoc = "cat <<EOF\nhi\nEOF";
     assert!(rewrite_candidate(heredoc, binary).is_none());
     assert_eq!(
-        rewrite_skip_reason(heredoc),
+        rewrite_skip_reason(heredoc, binary),
         "heredoc cannot be rewritten safely"
     );
 
     let unknown = "echo hello";
     assert!(rewrite_candidate(unknown, binary).is_none());
     assert_eq!(
-        rewrite_skip_reason(unknown),
+        rewrite_skip_reason(unknown, binary),
         "not a known read/search/list command"
     );
 
@@ -169,7 +172,7 @@ fn rewrite_skip_reason_tracks_candidate_none_branches() {
     let heredoc_compound = "git log | cat <<EOF\nhi\nEOF";
     assert!(rewrite_candidate(heredoc_compound, binary).is_none());
     assert_eq!(
-        rewrite_skip_reason(heredoc_compound),
+        rewrite_skip_reason(heredoc_compound, binary),
         "heredoc cannot be rewritten safely"
     );
 }
