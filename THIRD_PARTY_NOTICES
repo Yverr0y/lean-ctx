@@ -2,19 +2,19 @@
 Schema: leanctx.third-party-notices/v1
 Status: GENERATED AND APPROVED
 Content-Digest-Scope: SHA-256 of this file with the Content-Digest value zeroed
-Content-Digest: sha256:92ec2292beb4a03ef9114f28e10cb4d0cea06535745eb4b635581eda8067f97b
+Content-Digest: sha256:1161cebece7171113f60f429d14ee512009982616afdca929f1f8026d06740ad
 Source inventory: rust/Cargo.lock + cargo metadata --locked --offline --all-features + SBOM.cdx.json + legal/third-party-assets.toml + packages/pi-lean-ctx/package-lock.json
 Generation command: cargo metadata --locked --offline --all-features --manifest-path rust/Cargo.toml --format-version 1
 Approval contract: legal/third-party-notices-approval.toml binds approved_content_sha256 to this file's exact SHA-256
-Cargo.lock SHA-256: 0ec5dfcb060f102cf34e9017b1e21ad073082903d9b794a0cb3272645b4dbbd1
-Cargo metadata inventory SHA-256: 1393d066164ec084955dc746f1fdcd8557e15d5814c77f90a472cae459c58d36
-SBOM.cdx.json SHA-256: 53d31e4b08b708f8b21f70cacfd347dd4808d0106014f4ed4f3f90c1290cd72e
-SBOM components: 540
-Asset manifest SHA-256: 165b802a5f7ec82346c0be7197840a963517701264f747ae02a19bcc263aa540
+Cargo.lock SHA-256: 530be9fd1fa2ffe2ee4611edf68f621acc3e98fb3b9a1bdc1f4a54b6a5a0fcc2
+Cargo metadata inventory SHA-256: 46292627ffa676d1314bdd41538750c13b18ef3e7dc2afef9ddcc1b00edfb94d
+SBOM.cdx.json SHA-256: 1a0160d7ed2659e0f293a94fffee30652cdb1efd602370fb0aeb7db925e8065b
+SBOM components: 543
+Asset manifest SHA-256: 9bab577ec1c87c48739a4596d299be255f067fc8784cdb940f1604009e691f34
 npm package-lock.json SHA-256: df993605fd30412428c0ac5ab7b8caaee9b4ad5e49ff069cc07939fd705fd5a4
 Bundled MCP SDK: @modelcontextprotocol/sdk 1.32.1 (sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw==)
-Cargo graph packages: 594
-Third-party Cargo packages: 584
+Cargo graph packages: 597
+Third-party Cargo packages: 587
 
 ## Cargo dependency graph
 ### adler2 2.0.1
@@ -616,6 +616,14 @@ SPDX-License-Identifier: CC0-1.0 OR MIT-0 OR Apache-2.0
 Targets: bench[bench], bench_classic[bench], bench_generic[bench], constant_time_eq[lib], count_instructions[test], count_instructions_classic[test], count_instructions_generic[test], exhaustive[test]
 Features: count_instructions_test, default, std
 Dependencies: (none)
+
+### constant_time_eq 0.6.1
+Source: registry+https://github.com/rust-lang/crates.io-index
+Package source: https://codeberg.org/cesarb/constant_time_eq
+SPDX-License-Identifier: CC0-1.0 OR MIT-0 OR Apache-2.0
+Targets: bench[bench], bench_generic[bench], build-script-build[custom-build], constant_time_eq[lib], count_instructions[test], count_instructions_generic[test], exhaustive[test]
+Features: default, std
+Dependencies: rustversion
 
 ### cookie 0.18.2
 Source: registry+https://github.com/rust-lang/crates.io-index
@@ -1889,11 +1897,11 @@ Targets: lsif[test], lsp_types[lib]
 Features: default, proposed
 Dependencies: bitflags, fluent-uri, serde, serde_json, serde_repr
 
-### lzma-rust2 0.16.5
+### lzma-rust2 0.22.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/hasenbanck/lzma-rust2/
 SPDX-License-Identifier: Apache-2.0
-Targets: comparison[bench], efficiency[test], lzip[test], lzip_mt[test], lzip_reader[example], lzip_reference[test], lzip_writer[example], lzma2[test], lzma2_mt[test], lzma2_reader[example], lzma2_writer[example], lzma[test], lzma_reader[example], lzma_rust2[lib], lzma_writer[example], multi_writer[test], regression[test], unwind_safe[test], xz[test], xz_mt[test], xz_reader[example], xz_reference[test], xz_writer[example]
+Targets: bcj2[test], bcj2_memory[test], bounded_workers[test], comparison[bench], efficiency[test], encoder_cancellation[test], encoder_memory_usage[test], lzip[test], lzip_mt[test], lzip_reader[example], lzip_reference[test], lzip_stream[test], lzip_writer[example], lzma2[test], lzma2_mt[test], lzma2_reader[example], lzma2_stream[test], lzma2_writer[example], lzma[test], lzma_reader[example], lzma_rust2[lib], lzma_stream[test], lzma_writer[example], memory_usage[test], multi_writer[test], regression[test], unwind_safe[test], xz[test], xz_mt[test], xz_reader[example], xz_reference[test], xz_stream[test], xz_writer[example]
 Features: default, encoder, lzip, optimization, sha2, std, xz
 Dependencies: sha2
 
@@ -2385,11 +2393,11 @@ Targets: powerfmt[lib]
 Features: alloc, default, macros, std
 Dependencies: (none)
 
-### ppmd-rust 1.4.0
+### ppmd-rust 1.5.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/hasenbanck/ppmd-rust
 SPDX-License-Identifier: CC0-1.0 OR MIT-0
-Targets: ppmd_rust[lib], reference_test[test]
+Targets: ppmd_rust[lib], reference_test[test], regression[test]
 Features: default, unstable-tagged-offsets
 Dependencies: (none)
 
@@ -4633,13 +4641,13 @@ Targets: derives[example], make[example], make_var[example], zerovec_derive[proc
 Features: (none)
 Dependencies: proc-macro2, quote, syn
 
-### zip 8.6.0
+### zip 9.0.4
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/zip-rs/zip2
 SPDX-License-Identifier: MIT
 Targets: zip[lib]
-Features: _arbitrary, _bzip2_any, _deflate-any, aes-crypto, bitstream-io, bzip2, bzip2-rs, chrono, default, deflate, deflate-flate2, deflate-flate2-zlib, deflate-flate2-zlib-ng, deflate-flate2-zlib-ng-compat, deflate-flate2-zlib-rs, deflate-zopfli, deflate64, deprecated-time, getrandom, jiff-02, legacy-zip, lzma, nt-time, ppmd, time, unreserved, xz, zstd
-Dependencies: aes, bzip2, constant_time_eq, crc32fast, deflate64, flate2, getrandom, hmac, indexmap, lzma-rust2, memchr, pbkdf2, ppmd-rust, sha1, time, typed-path, zeroize, zopfli, zstd
+Features: _arbitrary, _bzip2_any, _deflate-any, _miri_compatible_features, aes-crypto, bitstream-io, bzip2, bzip2-rs, chrono, default, deflate, deflate-flate2, deflate-flate2-zlib, deflate-flate2-zlib-ng, deflate-flate2-zlib-ng-compat, deflate-flate2-zlib-rs, deflate-zopfli, deflate64, getrandom, jiff-02, legacy-zip, lzma, nt-time, ppmd, time, unreserved, xz, zstd
+Dependencies: aes, bzip2, constant_time_eq, crc32fast, deflate64, flate2, getrandom, hmac, indexmap, lzma-rust2, memchr, nix, pbkdf2, ppmd-rust, sha1, time, typed-path, zeroize, zopfli, zstd
 
 ### zlib-rs 0.6.7
 Source: registry+https://github.com/rust-lang/crates.io-index
@@ -4673,6 +4681,14 @@ Targets: basic[example], benchmark[example], issue_182[test], stream[example], t
 Features: arrays, bindgen, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, thin, thin-lto, wasm, zdict_builder, zstdmt
 Dependencies: zstd-safe
 
+### zstd 0.14.2
+Source: registry+https://github.com/rust-lang/crates.io-index
+Package source: https://github.com/gyscos/zstd-rs
+SPDX-License-Identifier: BSD-3-Clause
+Targets: basic[example], benchmark[example], invalid_dictionary[test], issue_182[test], issue_251[test], issue_381[test], issue_382[test], stream[example], throughput[example], train[example], with_rust_allocator[test], with_rust_allocator_dictionaries[test], with_rust_allocator_stream[test], zstd[example], zstd[lib], zstdcat[example]
+Features: arrays, bindgen, cmake, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, thin, thin-lto, vendored, wasm, with-rust-allocator, zdict_builder, zstdmt
+Dependencies: zstd-safe
+
 ### zstd-safe 7.2.4
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/gyscos/zstd-rs
@@ -4681,12 +4697,20 @@ Targets: build-script-build[custom-build], zstd_safe[lib]
 Features: arrays, bindgen, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, seekable, std, thin, thin-lto, zdict_builder, zstdmt
 Dependencies: zstd-sys
 
-### zstd-sys 2.0.16+zstd.1.5.7
+### zstd-safe 8.1.0
 Source: registry+https://github.com/rust-lang/crates.io-index
 Package source: https://github.com/gyscos/zstd-rs
-SPDX-License-Identifier: MIT/Apache-2.0
+SPDX-License-Identifier: BSD-3-Clause
+Targets: build-script-build[custom-build], with_rust_allocator[test], with_rust_allocator_clones[test], with_rust_allocator_dictionaries[test], with_rust_allocator_one_shot[test], zstd_safe[lib]
+Features: arrays, bindgen, cmake, debug, default, doc-cfg, experimental, fat-lto, legacy, no_asm, pkg-config, seekable, std, thin, thin-lto, vendored, with-rust-allocator, zdict_builder, zstdmt
+Dependencies: zstd-sys
+
+### zstd-sys 2.1.1+zstd.1.5.7
+Source: registry+https://github.com/rust-lang/crates.io-index
+Package source: https://github.com/gyscos/zstd-rs
+SPDX-License-Identifier: BSD-3-Clause
 Targets: build-script-build[custom-build], zstd_sys[lib]
-Features: bindgen, debug, default, experimental, fat-lto, legacy, no_asm, no_wasm_shim, non-cargo, pkg-config, seekable, std, thin, thin-lto, zdict_builder, zstdmt
+Features: bindgen, cmake, debug, default, experimental, fat-lto, legacy, no_asm, no_wasm_shim, non-cargo, pkg-config, seekable, std, thin, thin-lto, vendored, zdict_builder, zstdmt
 Dependencies: cc, pkg-config
 
 ## Non-Cargo and vendored assets

@@ -123,7 +123,7 @@ mod tests {
 
         crate::test_env::remove_var("LEAN_CTX_ALLOW_PATH");
         let res = load_linked_projects(root.path());
-        assert!(res.roots.is_empty());
+        assert_eq!(res.roots, Vec::<PathBuf>::new());
         assert!(
             res.warnings
                 .iter()

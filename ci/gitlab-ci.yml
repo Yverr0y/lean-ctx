@@ -20,7 +20,7 @@ variables:
 # evidence. This is not a replacement for product E2E or release approval.
 v4-runtime:
   stage: verify
-  image: rust:1.88.0-bookworm
+  image: rust:1.99.1-bookworm
   timeout: 3 hours
   resource_group: v4-rust-validation
   variables:
@@ -97,7 +97,7 @@ v4-runtime:
 
 v4-provenance:
   stage: verify
-  image: rust:1.88.0-bookworm
+  image: rust:1.99.1-bookworm
   timeout: 15 minutes
   before_script:
     - apt-get update -qq
