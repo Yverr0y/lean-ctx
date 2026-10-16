@@ -46,11 +46,7 @@ pub(super) fn resolve_instruction_file_mode(path: &str, mode: &str) -> (String, 
     // already been given, so the "instruction files need complete content"
     // rule does not apply — overriding it to `full` re-sent the whole file and
     // silently discarded the delta the caller asked for.
-    if !crate::tools::ctx_read::is_instruction_file(path)
-        || matches!(mode, "full" | "raw" | "anchored" | "diff")
-        || mode.starts_with("anchored:")
-        || mode.starts_with("lines:")
-    {
+    if !crate::tools::ctx_read::instruction_file_forces_full(path, mode) {
         return (mode.to_string(), None);
     }
 

@@ -81,6 +81,13 @@ impl ServerHandler for LeanCtxServer {
         tracing::info!("MCP client connected: {:?}", name);
         *self.client_name.write().await = name.clone();
         *self.peer.write().await = Some(context.peer.clone());
+        // Per-agent savings attribution: a personal server serves exactly one
+        // client, so its ledger events can carry that client's identity. The
+        // shared (multi-client) mode keeps the process-level fallback.
+        if self.session_mode != crate::tools::SessionMode::Shared {
+            let bus_id = self.presence_agent_id.read().await.clone();
+            crate::core::agent_identity::set_session_attribution(&name, bus_id.as_deref());
+        }
 
         if self.session_mode != crate::tools::SessionMode::Shared {
             if let Ok(data_dir) = crate::core::data_dir::lean_ctx_data_dir() {

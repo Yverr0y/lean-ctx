@@ -127,7 +127,7 @@ pub(crate) fn spawn(server: crate::tools::LeanCtxServer) {
                     // Same flush set as the parent watchdog and the clean
                     // shutdown path (#550).
                     let _ = tokio::task::spawn_blocking(|| {
-                        crate::core::tool_lifecycle::flush_all();
+                        crate::core::tool_lifecycle::flush_all_at_exit();
                         crate::core::telemetry_features::record_mcp_session_end();
                         crate::cloud_sync::send_telemetry(
                             crate::core::telemetry_aggregate::SendTrigger::Exit,

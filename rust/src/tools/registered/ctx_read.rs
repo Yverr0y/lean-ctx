@@ -258,7 +258,10 @@ impl CtxReadTool {
                 let reason = gate_result.reason.unwrap_or("context-gate");
                 // #1588: an override the caller cannot escape is a dead end.
                 // Name the escape hatch for the two heuristics that honour it.
-                let escape = if matches!(reason, "bounce-prevention" | "intent-target") {
+                let escape = if matches!(
+                    reason,
+                    "bounce-prevention" | "intent-target" | "learned-full"
+                ) {
                     ", pass fresh=true to keep the requested mode"
                 } else {
                     ""

@@ -498,6 +498,81 @@ fn documents_under_a_skill_remain_instruction_files() {
     }
 }
 
+/// Relative paths that start with the instruction directory must match too:
+/// `skills/…` has no leading `/` before the segment.
+#[test]
+fn relative_instruction_directories_are_recognised() {
+    for path in [
+        "skills/leanctx-gateway-delivery/SKILL.md",
+        "skills/demo/guide.md",
+        "docs/internal/skills/agent-orchestration.md",
+        ".claude/rules/house-style.md",
+        ".cursor/rules/lean-ctx.mdc",
+        "AGENTS.md",
+        "Claude.md",
+        "GEMINI.md",
+        "LEAN-CTX.md",
+        ".cursorrules",
+    ] {
+        assert!(is_instruction_file(path), "{path} carries instructions");
+    }
+    assert!(!is_instruction_file("skills/demo/run.py"));
+    assert!(!is_instruction_file("myskills/notes.md"));
+}
+
+#[test]
+fn instruction_files_force_full_only_for_compressing_modes() {
+    let path = "docs/internal/skills/agent-orchestration.md";
+    for mode in [
+        "auto",
+        "map",
+        "signatures",
+        "aggressive",
+        "entropy",
+        "task",
+        "reference",
+    ] {
+        assert!(instruction_file_forces_full(path, mode), "{mode}");
+    }
+    for mode in [
+        "full",
+        "raw",
+        "anchored",
+        "anchored:1-9",
+        "diff",
+        "lines:1-40",
+    ] {
+        assert!(!instruction_file_forces_full(path, mode), "{mode} stays");
+    }
+    assert!(!instruction_file_forces_full("src/main.rs", "map"));
+}
+
+/// The dispatch path (CLI/daemon tools) serves an instruction file in full for
+/// an explicit compressing mode, like the MCP tool does.
+#[test]
+fn dispatch_serves_instruction_file_in_full_for_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join("skills").join("demo");
+    std::fs::create_dir_all(&skill).unwrap();
+    let file = skill.join("SKILL.md");
+    let mut body = String::new();
+    for i in 0..80 {
+        use std::fmt::Write as _;
+        let _ = write!(
+            body,
+            "## Step {i}\n\nDo the thing number {i} carefully.\n\n"
+        );
+    }
+    std::fs::write(&file, &body).unwrap();
+    let path = file.to_string_lossy().to_string();
+    let mut cache = SessionCache::new();
+    let out = handle(&mut cache, &path, "map", CrpMode::Off);
+    assert!(
+        out.contains("Do the thing number 79 carefully."),
+        "map of an instruction file must deliver the complete text"
+    );
+}
+
 #[test]
 fn resolve_auto_mode_returns_full_for_instruction_files() {
     let mode = resolve_auto_mode(

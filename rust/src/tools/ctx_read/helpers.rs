@@ -47,17 +47,36 @@ fn is_builtin_instruction_file(path: &str) -> bool {
         return true;
     }
 
-    // Inside an instruction directory, only documents qualify.
-    let in_instruction_dir = lower.contains("/skills/")
-        || lower.contains("/.cursor/rules/")
-        || lower.contains("/.claude/rules/")
-        || lower.contains("/.claude/agents/")
-        || lower.contains("/.claude/commands/");
+    // Inside an instruction directory, only documents qualify. A relative
+    // path can start with the directory (`skills/x/SKILL.md`), so match on a
+    // leading `/` added to the path rather than on the raw string.
+    let rooted = format!("/{}", lower.trim_start_matches('/'));
+    let in_instruction_dir = [
+        "/skills/",
+        "/.cursor/rules/",
+        "/.claude/rules/",
+        "/.claude/agents/",
+        "/.claude/commands/",
+    ]
+    .iter()
+    .any(|dir| rooted.contains(dir));
     in_instruction_dir
         && file
             .extension()
             .and_then(|e| e.to_str())
             .is_none_or(|ext| INSTRUCTION_DOC_EXTENSIONS.contains(&ext))
+}
+
+/// Whether a read of `path` in `mode` must be served as `full` because the
+/// file carries agent instructions: every agent needs its complete text, so a
+/// compressed view is re-read in full right away (a guaranteed bounce).
+/// Lossless and pinned views — `full`, `raw`, `anchored`, `diff`, `lines:` —
+/// keep the requested mode: they never withhold content the caller asked for.
+pub fn instruction_file_forces_full(path: &str, mode: &str) -> bool {
+    !(matches!(mode, "full" | "raw" | "anchored" | "diff")
+        || mode.starts_with("anchored:")
+        || mode.starts_with("lines:"))
+        && is_instruction_file(path)
 }
 
 /// Whether the user excluded `path` from lean-ctx rewriting: `redirect_exclude`

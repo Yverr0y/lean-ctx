@@ -344,11 +344,14 @@ fn handle_with_options_resolved_preread(
         config.ocla.delivery.delivery_for_subagents,
     );
 
-    let compress_protected = mode != "raw"
+    // Instruction files are served in full (see `handle_with_options_inner`),
+    // so a relayed compressed view of another agent's read must not stand in.
+    let compress_protected = (mode != "raw"
         && !mode.starts_with("lines:")
         && crate::core::config::Config::load()
             .proxy
-            .is_path_compress_protected(path);
+            .is_path_compress_protected(path))
+        || super::instruction_file_forces_full(path, mode);
 
     // Hash once for cross-agent delivery. The same snapshot is used for both
     // the pre-read lookup and the post-read record, avoiding a second disk read.
@@ -467,13 +470,14 @@ fn handle_with_options_resolved_preread(
     crate::core::context_kernel::adaptive_hook::update_from_bounce_tracker();
     if let Ok(mut bt) = crate::core::bounce_tracker::global().lock() {
         let original_tokens = cache.get(path).map_or(0, |e| e.original_tokens);
-        let bounces_before = bt.total_bounces();
-        let output_tokens = result.output_tokens;
-        bt.record_read(path, &result.resolved_mode, output_tokens, original_tokens);
-
-        if bt.total_bounces() > bounces_before {
-            crate::core::anti_interrupt::spawn_bounce_waste(output_tokens as u64);
-        }
+        // Bounce waste is reported when a provisional bounce is committed
+        // (`BounceTracker::commit`), not here: a read-then-edit cancels it.
+        bt.record_read(
+            path,
+            &result.resolved_mode,
+            result.output_tokens,
+            original_tokens,
+        );
 
         // Quality signals (#538): compressed reads count as clean until a
         // bounce proves otherwise (the bounce signal outweighs 6:1); large

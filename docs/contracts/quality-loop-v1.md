@@ -13,6 +13,17 @@ quoted an `old_string` from a `map`/`signatures` rendering whose body was
 never in context, the edit missed, and the next read of a similar file was
 compressed exactly the same way.
 
+A re-read bounce is provisional: a compressed read, a full read and then an
+edit of the same file is the read-before-edit flow, not a compression
+failure. `BounceTracker` books a detected bounce only when no edit of the path
+follows within 10 read ticks (`ctx_patch`, `ctx_edit`, or a native host edit
+reported by the hook through the `edit_beacon.log` file in the data
+directory), and at process shutdown at the latest. Only booked bounces reach
+the savings ledger, `path_mode_memory`, the quality signal and the scent
+field. A path that memory marks as always re-read in full is delivered in full
+for explicit compressing modes as well (`reason=learned-full`); `lines:`,
+`diff`, `raw` and `anchored` reads are never rewritten.
+
 ## Signals
 
 Edit outcomes are recorded by `ctx_edit` (both the MCP tool and the in-process

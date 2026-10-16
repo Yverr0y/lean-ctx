@@ -88,10 +88,21 @@ pub fn maybe_capture(input: &str) {
         return;
     }
 
+    let is_edit = is_edit_tool(&tool);
+    if (is_edit || is_write_tool(&tool))
+        && let Some((_, path)) = payload::resolve_path_field(Some(&args), payload::READ_PATH_FIELDS)
+    {
+        // The MCP server's bounce tracker never sees native edits: report the
+        // edit so a provisional compressed→full bounce of this file is
+        // cancelled as read-before-edit (see `bounce_tracker` edit beacon).
+        let absolute = std::path::Path::new(&root).join(&path);
+        crate::core::bounce_tracker::note_host_edit(&absolute.to_string_lossy());
+    }
+
     let provenance_config = crate::core::config::Config::load().provenance;
     let capture_provenance = provenance_config.enabled && provenance_config.capture_native_edits;
 
-    if is_edit_tool(&tool) {
+    if is_edit {
         handle_edit_tool(&v, &args, &tool, &root, capture_provenance);
     } else if is_write_tool(&tool) {
         handle_write_tool(&v, &args, &tool, &root, capture_provenance);

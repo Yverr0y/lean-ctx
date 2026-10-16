@@ -450,6 +450,9 @@ impl LeanCtxServer {
         // `cep.sessions`/`total_cache_hits` at 0 in stats.json despite real
         // cache hits (#361).
         crate::core::stats::flush();
+        // A dropped connection ends its read/edit sequence: book the bounces
+        // still waiting for their edit window instead of losing them.
+        crate::core::bounce_tracker::flush_pending();
         // Flush the persistent stub index (#955) so an unchanged re-read survives
         // this restart as a cheap stub instead of a full re-delivery.
         crate::core::read_stub_index::persist();
