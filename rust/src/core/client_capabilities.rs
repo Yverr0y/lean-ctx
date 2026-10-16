@@ -252,6 +252,17 @@ fn identify_client(lower: &str) -> String {
         "opencode"
     } else if lower.contains("goose") {
         "goose"
+    } else if lower == "omp" || lower.starts_with("omp-") || has(&["oh-my-pi", "oh my pi"]) {
+        // Oh My Pi (`omp-coding-agent`) is a Pi fork with its own MCP client.
+        "oh-my-pi"
+    } else if lower == "pi"
+        || lower.starts_with("pi-")
+        || lower.starts_with("pi ")
+        || has(&["pi coding agent", "pi-coding-agent"])
+    {
+        // Pi has no built-in MCP client: it connects through extensions that
+        // announce themselves as `pi-lean-ctx`, `pi-mcp-adapter`, `pi-mcp-probe`.
+        "pi"
     } else if lower == "amp" || lower.starts_with("amp-") || lower.starts_with("amp ") {
         "amp"
     } else if lower.contains("augment") {
@@ -419,6 +430,20 @@ mod tests {
     }
 
     #[test]
+    fn pi_detection_needs_the_pi_name_not_the_letters() {
+        for name in ["pi", "pi-lean-ctx", "pi-mcp-probe", "pi coding agent"] {
+            assert_eq!(identify_client(name), "pi", "{name}");
+        }
+        for name in ["omp", "omp-coding-agent", "oh-my-pi"] {
+            assert_eq!(identify_client(name), "oh-my-pi", "{name}");
+        }
+        // Words that merely contain "pi" or "omp" are other clients.
+        for name in ["pipeline-runner", "api-client", "spinnaker", "compose-mcp"] {
+            assert_eq!(identify_client(name), "unknown", "{name}");
+        }
+    }
+
+    #[test]
     fn unknown_client_tier4() {
         let caps = ClientMcpCapabilities::detect("random-editor");
         assert_eq!(caps.client_id, "unknown");
@@ -482,6 +507,10 @@ mod tests {
             ("Visual Studio", "visual-studio", "unknown-editor"),
             ("LM Studio", "lm-studio", "unknown-editor"),
             ("Qwen Code", "qwen-code", "unknown-editor"),
+            ("pi-lean-ctx", "pi", "unknown-editor"),
+            ("pi-mcp-adapter", "pi", "unknown-editor"),
+            ("Pi Coding Agent", "pi", "unknown-editor"),
+            ("omp-coding-agent", "oh-my-pi", "unknown-editor"),
         ] {
             let caps = ClientMcpCapabilities::detect_with_hint(name, None);
             let reference = ClientMcpCapabilities::detect_with_hint(same_caps_as, None);

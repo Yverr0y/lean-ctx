@@ -853,6 +853,8 @@ pub enum ClientFamily {
     Neovim,
     Emacs,
     Factory,
+    Pi,
+    OhMyPi,
     /// No MCP client was seen: LeanCTX runs only through the CLI or shell hooks.
     None,
     /// An MCP client LeanCTX does not recognise.
@@ -897,6 +899,8 @@ impl ClientFamily {
             "neovim" => Self::Neovim,
             "emacs" => Self::Emacs,
             "factory" => Self::Factory,
+            "pi" => Self::Pi,
+            "oh-my-pi" => Self::OhMyPi,
             _ => return None,
         })
     }
@@ -1347,6 +1351,8 @@ mod tests {
             ("antigravity", "antigravity"),
             ("codebuddy", "codebuddy"),
             ("codewhale", "codewhale"),
+            ("pi", "pi"),
+            ("oh-my-pi", "oh_my_pi"),
         ];
         for (id, wire) in cases {
             let family = ClientFamily::from_client_id(id).expect(id);
