@@ -65,6 +65,7 @@ All `std::sync::Mutex` unless noted otherwise.
 | L7 | `STATS_BUFFER` | `core/stats/mod.rs:13` | `Mutex<Option<(StatsStore, StatsStore, Instant)>>` | Token-savings statistics |
 | L8 | `COST_BUFFER` | `core/a2a/cost_attribution.rs:69` | `Mutex<Option<CostStore>>` | A2A cost tracking |
 | L9 | `GLOBAL_LIMITER` | `core/a2a/rate_limiter.rs:121` | `Mutex<Option<RateLimiter>>` | Global A2A rate limiter |
+| L10 | `STATE` (egress rate window) | `core/egress.rs:163` | `OnceLock<Mutex<VecDeque<Instant>>>` | Sliding 60 s window of outbound-egress timestamps for `check_rate`; held only to prune and push one `Instant`, no I/O and no other lock under it. Poison denies the request (fail-closed). |
 | L14 | `ACTIVE_ROLE_NAME` | `core/roles.rs:12` | `OnceLock<Mutex<String>>` | Currently active role name |
 | L15 | `PROVIDER_CACHE` | `core/providers/cache.rs:5` | `LazyLock<Mutex<ProviderCache>>` | Cached provider metadata |
 | L16 | `LAST_BANDIT_ARM` | `core/adaptive_thresholds.rs:337` | `Mutex<Option<(String, String, String)>>` | Last bandit arm selection for adaptive thresholds |
