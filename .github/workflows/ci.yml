@@ -638,11 +638,11 @@ jobs:
         with:
           # Pinned, not `stable`: tarpaulin parses LLVM's raw profile format
           # itself, and each new rustc can bump that format before tarpaulin
-          # learns to read it. Rust 1.99.0 did exactly that ("consistency
-          # check for reading counts failed" / "parser failure:
-          # Nom(Satisfy)") and turned Coverage red on unchanged code. Raise
-          # this together with a tarpaulin release that reads the new format.
-          toolchain: 1.98.1
+          # learns to read it. Rust 1.99 did exactly that (LLVM 23, raw
+          # profile v11): tarpaulin 0.35.2 failed with "parser failure:
+          # Nom(Satisfy)"; 0.37.1+ reads it. Raise this together with the
+          # tarpaulin pin below, after checking the new pair on a real run.
+          toolchain: 1.99.1
           # tarpaulin's LLVM engine (below) needs llvm-profdata/llvm-cov from
           # the rustup component — without it the engine silently falls back.
           # rustfmt: the lsp::format and ctx_refactor tests run it, and a
@@ -658,9 +658,11 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
           df -h /
-      - uses: taiki-e/install-action@74e87cbfa15a59692b158178d8905a61bf6fca95 # v2
+      # v2.87.28: the older pin's manifest stopped at tarpaulin 0.35.2, which
+      # cannot parse Rust 1.99's profiles. Version pinned with the toolchain.
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: cargo-tarpaulin
+          tool: cargo-tarpaulin@0.37.5
       - name: Generate coverage
         working-directory: rust
         env:
