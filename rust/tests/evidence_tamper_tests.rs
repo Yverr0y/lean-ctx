@@ -80,7 +80,7 @@ fn read_zip_entries(path: &Path) -> Vec<(String, Vec<u8>)> {
             entry
                 .read_to_end(&mut bytes)
                 .expect("read ZIP entry content");
-            (entry.name().to_owned(), bytes)
+            (entry.name().unwrap().into_owned(), bytes)
         })
         .collect()
 }

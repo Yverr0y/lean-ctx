@@ -94,7 +94,18 @@ fn verify_bundle_with_limits(
             for i in 0..archive.len() {
                 match archive.by_index(i) {
                     Ok(mut entry) => {
-                        let name = entry.name().to_string();
+                        // zip 9 rejects names it cannot decode; so does the verifier.
+                        let name = match entry.name() {
+                            Ok(name) => name.into_owned(),
+                            Err(e) => {
+                                fail(&mut steps, "archive readable", format!("entry {i}: {e}"));
+                                return Report {
+                                    valid: false,
+                                    key_self_attested: false,
+                                    steps,
+                                };
+                            }
+                        };
                         let declared_bytes = entry.size();
                         if declared_bytes > limits.entry_bytes {
                             return archive_limit_failure(format!(
