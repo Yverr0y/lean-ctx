@@ -1,4 +1,4 @@
-//! Mode-degradation and attribution helpers for `ctx_read`.
+//! Attribution and summary helpers for `ctx_read`.
 //!
 //! Split out of `ctx_read.rs` to keep that file under the #660 LOC gate. These
 //! are leaf helpers with no access to the read pipeline's local state.
@@ -29,53 +29,6 @@ pub(super) fn record_attribution_result(ctx: &ToolContext, source: String, outpu
     if let Err(error) = crate::core::causal_attribution::record_chunk(&session_id, chunk) {
         tracing::debug!(%error, "causal attribution ctx_read recording failed");
     }
-}
-
-pub(super) fn apply_verdict(
-    mode: &str,
-    verdict: crate::core::degradation_policy::DegradationVerdictV1,
-) -> (String, bool) {
-    use crate::core::degradation_policy::DegradationVerdictV1;
-    match verdict {
-        DegradationVerdictV1::Ok => (mode.to_string(), false),
-        DegradationVerdictV1::Warn => match mode {
-            "full" => ("map".to_string(), true),
-            other => (other.to_string(), false),
-        },
-        DegradationVerdictV1::Throttle => match mode {
-            "full" | "map" => ("signatures".to_string(), true),
-            other => (other.to_string(), false),
-        },
-        DegradationVerdictV1::Block => {
-            if mode == "signatures" {
-                ("signatures".to_string(), false)
-            } else {
-                ("signatures".to_string(), true)
-            }
-        }
-    }
-}
-
-pub(super) fn auto_degrade_read_mode(mode: &str) -> (String, Option<String>) {
-    if crate::core::config::Config::load().no_degrade_effective() {
-        return (mode.to_string(), None);
-    }
-    let profile = crate::core::profiles::active_profile();
-    if !profile.degradation.enforce_effective() {
-        return (mode.to_string(), None);
-    }
-    let policy = crate::core::degradation_policy::evaluate_v1_for_tool("ctx_read", None);
-    let (new_mode, degraded) = apply_verdict(mode, policy.decision.verdict);
-    let warning = if degraded {
-        Some(format!(
-            "⚠ Context pressure: mode={mode} was downgraded to mode={new_mode} \
-             (verdict: {:?}). Use start_line=1 to bypass, or run ctx_compress to free budget.",
-            policy.decision.verdict
-        ))
-    } else {
-        None
-    };
-    (new_mode, warning)
 }
 
 pub(super) fn extract_file_summary(output: &str, path: &str) -> String {

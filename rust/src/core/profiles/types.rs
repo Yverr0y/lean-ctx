@@ -28,8 +28,6 @@ pub struct Profile {
     #[serde(default)]
     pub routing: RoutingConfig,
     #[serde(default)]
-    pub degradation: DegradationConfig,
-    #[serde(default)]
     pub autonomy: ProfileAutonomy,
     #[serde(default)]
     pub output_hints: OutputHints,
@@ -152,27 +150,6 @@ impl RoutingConfig {
 
     pub fn degrade_under_pressure_effective(&self) -> bool {
         self.degrade_under_pressure.unwrap_or(true)
-    }
-}
-
-/// Budget/SLO degradation policy configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DegradationConfig {
-    /// If true, enforce throttling/blocking decisions. Default is warn-only.
-    #[serde(default)]
-    pub enforce: Option<bool>,
-    /// Throttle duration (ms) when policy verdict is Throttle. Default: 250ms.
-    #[serde(default)]
-    pub throttle_ms: Option<u64>,
-}
-
-impl DegradationConfig {
-    pub fn enforce_effective(&self) -> bool {
-        self.enforce.unwrap_or(false)
-    }
-
-    pub fn throttle_ms_effective(&self) -> u64 {
-        self.throttle_ms.unwrap_or(250)
     }
 }
 

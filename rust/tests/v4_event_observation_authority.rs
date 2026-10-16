@@ -135,11 +135,11 @@ fn legacy_producer_commits_before_projection_and_preserves_history() {
     );
     let projection = events::latest_events(10);
     assert_eq!(
-        events::emit(EventKind::Anomaly {
-            metric: "invalid".into(),
-            expected: 1.0,
-            actual: f64::NAN,
-            deviation_factor: 1.0,
+        events::emit(EventKind::ThresholdAdapted {
+            language: "invalid".into(),
+            arm: "invalid".into(),
+            old_threshold: 1.0,
+            new_threshold: f64::NAN,
         }),
         0
     );

@@ -2,7 +2,7 @@
 
 use super::super::{
     CallToolRequestParams, CallToolResult, CrpMode, ErrorData, LeanCtxServer, elicitation, helpers,
-    is_shell_tool_name, permission_inheritance, post_process,
+    permission_inheritance,
 };
 use crate::core::ocla::response_cache::{
     CachedResponse, ResponseCache, ResponseCacheKey, global_response_cache,
@@ -518,17 +518,6 @@ impl LeanCtxServer {
             return Ok(PreparedCallResult::Terminal(blocked, "workflow denied"));
         }
 
-        // #794: cost cap guard — block tool calls when session cost exceeds the
-        // configured limit. ctx_session is exempt so the agent can inspect
-        // budget status and override the cap.
-        if name != "ctx_session"
-            && let Some(cap_msg) =
-                crate::core::budget_tracker::BudgetTracker::global().cost_cap_message()
-        {
-            let result = CallToolResult::error(vec![ContentBlock::text(cap_msg)]);
-            return Ok(PreparedCallResult::Terminal(result, "cost cap reached"));
-        }
-
         // #990: determine machine-readability *before* the once-per-session
         // decorations below. A machine-readable invocation (e.g. ctx_outline
         // format=json) must reach the client byte-exact and parseable, so every
@@ -658,16 +647,6 @@ impl LeanCtxServer {
                     "permission inheritance denied",
                 ));
             }
-        }
-
-        if let Some(msg) = post_process::budget_exhausted_message(name) {
-            tracing::warn!(tool = name, "{msg}");
-            let result = CallToolResult::success(vec![ContentBlock::text(msg)]);
-            return Ok(PreparedCallResult::Terminal(result, "budget exhausted"));
-        }
-
-        if is_shell_tool_name(name) {
-            crate::core::budget_tracker::BudgetTracker::global().record_shell();
         }
 
         let project_root = self

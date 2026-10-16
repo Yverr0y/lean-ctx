@@ -42,10 +42,8 @@ pub fn handle(
         "restore" => handle_restore(session_id),
         "resume" => handle_resume(session),
         "profile" => handle_profile(value),
-        "budget" => handle_budget(),
         "role" => handle_role(value),
         "diff" => handle_diff(value),
-        "slo" => handle_slo(value),
         "output_stats" => handle_output_stats(),
         "verify" => handle_verify(),
         "episodes" => handle_episodes(session, tool_calls, value, opts),
@@ -68,10 +66,8 @@ pub fn handle_without_session(
         "cleanup" => Some(handle_cleanup()),
         "restore" => Some(handle_restore(session_id)),
         "profile" => Some(handle_profile(value)),
-        "budget" => Some(handle_budget()),
         "role" => Some(handle_role(value)),
         "diff" => Some(handle_diff(value)),
-        "slo" => Some(handle_slo(value)),
         "output_stats" => Some(handle_output_stats()),
         "verify" => Some(handle_verify()),
         _ => None,
@@ -451,7 +447,6 @@ fn handle_reset(session: &mut SessionState) -> String {
         }
         let old_id = session.id.clone();
         *session = SessionState::new();
-        crate::core::budget_tracker::BudgetTracker::global().reset();
         // Clear the persistent context ledger so pressure resets to 0%
         let mut ledger = crate::core::context_ledger::ContextLedger::load();
         ledger.reset();
@@ -586,40 +581,17 @@ fn handle_profile(value: Option<&str>) -> String {
     }
 }
 
-fn handle_budget() -> String {
-    {
-        use crate::core::budget_tracker::BudgetTracker;
-        let snap = BudgetTracker::global().check();
-        let mut out = snap.format_compact();
-
-        if let Ok(data_dir) = crate::core::data_dir::lean_ctx_data_dir() {
-            let window = crate::core::context_radar::default_window_for_client("cursor");
-            let radar = crate::core::context_radar::ContextRadar::load(&data_dir, window);
-            let radar_display = radar.format_display();
-            if !radar_display.is_empty() {
-                out.push_str("\n\n");
-                out.push_str(&radar_display);
-            }
-        }
-        out
-    }
-}
-
 fn handle_role(value: Option<&str>) -> String {
     {
         use crate::core::roles;
         if let Some(name) = value {
             match roles::set_active_role(name) {
                 Ok(r) => {
-                    crate::core::budget_tracker::BudgetTracker::global().reset();
                     format!(
                         "Role switched to '{name}'.\n\
-                             Shell: {}, Budget: {} tokens / {} shell / ${:.2}\n\
+                             Shell: {}\n\
                              Tools: {}",
                         r.role.shell_policy,
-                        r.limits.max_context_tokens,
-                        r.limits.max_shell_invocations,
-                        r.limits.max_cost_usd,
                         if r.tools.allowed.iter().any(|a| a == "*") {
                             let denied = if r.tools.denied.is_empty() {
                                 "none".to_string()
@@ -645,13 +617,9 @@ fn handle_role(value: Option<&str>) -> String {
             let mut out = format!(
                 "Active role: {name}\n\
                      Description: {}\n\
-                     Shell policy: {}, Budget: {} tokens / {} shell / ${:.2}\n\n\
+                     Shell policy: {}\n\n\
                      Available roles:",
-                r.role.description,
-                r.role.shell_policy,
-                r.limits.max_context_tokens,
-                r.limits.max_shell_invocations,
-                r.limits.max_cost_usd,
+                r.role.description, r.role.shell_policy,
             );
             for info in &list {
                 let marker = if info.is_active { " *" } else { "  " };
@@ -692,38 +660,6 @@ fn handle_diff(value: Option<&str>) -> String {
             }
             (None, _) => format!("Session not found: {id_a}"),
             (_, None) => format!("Session not found: {id_b}"),
-        }
-    }
-}
-
-fn handle_slo(value: Option<&str>) -> String {
-    match value {
-        Some("reload") => {
-            crate::core::slo::reload();
-            "SLO definitions reloaded from disk.".to_string()
-        }
-        Some("history") => {
-            let hist = crate::core::slo::violation_history(20);
-            if hist.is_empty() {
-                "No SLO violations recorded.".to_string()
-            } else {
-                let mut out = format!("SLO violations (last {}):\n", hist.len());
-                for v in &hist {
-                    out.push_str(&format!(
-                        "  {} {} ({}) {:.2} vs {:.2} → {}\n",
-                        v.timestamp, v.slo_name, v.metric, v.actual, v.threshold, v.action
-                    ));
-                }
-                out
-            }
-        }
-        Some("clear") => {
-            crate::core::slo::clear_violations();
-            "SLO violation history cleared.".to_string()
-        }
-        _ => {
-            let snap = crate::core::slo::evaluate_quiet();
-            snap.format_compact()
         }
     }
 }
@@ -994,7 +930,7 @@ fn handle_procedures(session: &mut SessionState, value: Option<&str>) -> String 
 
 fn handle_unknown(action: &str) -> String {
     format!(
-        "Unknown action: {action}. Use: status, handoff, load, save, task, finding, decision, reset, list, cleanup, snapshot, restore, resume, configure, profile, role, budget, slo, diff, output_stats, verify, export, import, episodes, procedures"
+        "Unknown action: {action}. Use: status, handoff, load, save, task, finding, decision, reset, list, cleanup, snapshot, restore, resume, configure, profile, role, diff, output_stats, verify, export, import, episodes, procedures"
     )
 }
 

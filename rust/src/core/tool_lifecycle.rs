@@ -269,12 +269,6 @@ fn record_read_learning(
     predictor.set_project_root(project_root);
     predictor.record(sig, outcome);
     predictor.save();
-
-    // Anomaly detector: the same per-call metric the MCP post-dispatch records.
-    // `save_debounced` writes on the first call of a fresh process (last-save
-    // marker starts at 0), so the single shadow read persists before exit.
-    crate::core::anomaly::record_metric("tokens_per_call", output_tokens as f64);
-    crate::core::anomaly::save_debounced();
 }
 
 fn read_observation(
@@ -440,11 +434,6 @@ pub(crate) fn record_search_accounting(
 
         maybe_consolidate(project_root.as_deref(), calls);
     }
-
-    // Per-call anomaly metric, mirroring the MCP post-dispatch (#550). Missing it
-    // left dashboard signals blind to shadow-mode (`grep` → `lean-ctx grep`) hooks.
-    crate::core::anomaly::record_metric("tokens_per_call", output_tokens as f64);
-    crate::core::anomaly::save_debounced();
 }
 
 /// Record a tree/ls operation with full Context OS side effects.

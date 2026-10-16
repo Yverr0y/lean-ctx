@@ -1,7 +1,4 @@
 {
-  "lean_ctx_anomalies_total": {
-    "type": "gauge"
-  },
   "lean_ctx_cache_hit_rate": {
     "type": "gauge"
   },
@@ -27,19 +24,7 @@
   "lean_ctx_ledger_tokens_saved_total": {
     "type": "counter"
   },
-  "lean_ctx_session_context_tokens": {
-    "type": "gauge"
-  },
-  "lean_ctx_session_cost_usd": {
-    "type": "gauge"
-  },
   "lean_ctx_session_uptime_seconds": {
-    "type": "gauge"
-  },
-  "lean_ctx_shell_invocations_total": {
-    "type": "counter"
-  },
-  "lean_ctx_slo_violations_total": {
     "type": "gauge"
   },
   "lean_ctx_tokens_input_total": {

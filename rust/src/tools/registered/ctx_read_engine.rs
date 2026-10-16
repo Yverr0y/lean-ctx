@@ -219,7 +219,6 @@ struct GateAdmissionIdentityV1<'a> {
     requested_mode: &'a str,
     overridden_mode: Option<&'a str>,
     reason: Option<&'a str>,
-    pressure_downgraded: bool,
     budget_blocked: bool,
     triage_filter_level: u8,
 }
@@ -242,7 +241,6 @@ pub(super) fn admission_from_gate(
         requested_mode,
         overridden_mode: gate.overridden_mode.as_deref(),
         reason: gate.reason,
-        pressure_downgraded: gate.pressure_downgraded,
         budget_blocked: gate.budget_blocked,
         triage_filter_level: gate.triage_filter_level,
     };
@@ -254,7 +252,6 @@ pub(super) fn admission_from_gate(
         ))
         .map_err(|error| error.to_string())?,
         decision: if gate.budget_blocked
-            || gate.pressure_downgraded
             || gate.overridden_mode.is_some()
             || gate.triage_filter_level > 0
         {
@@ -460,7 +457,6 @@ mod tests {
         PreDispatchResult {
             overridden_mode: overridden_mode.map(str::to_owned),
             reason: overridden_mode.map(|_| "fixture-override"),
-            pressure_downgraded: overridden_mode.is_some(),
             budget_blocked: blocked,
             budget_warning: None,
             triage_filter_level: u8::from(overridden_mode.is_some()),

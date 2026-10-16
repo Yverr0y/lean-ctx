@@ -275,7 +275,6 @@ pub mod task_spine;
 // ---------------------------------------------------------------------------
 #[allow(dead_code)]
 pub(crate) mod agent_connector;
-pub mod anomaly;
 pub(crate) mod benchmark;
 pub mod benchmark_compare;
 #[allow(dead_code)]
@@ -292,7 +291,6 @@ pub mod conformance;
 pub mod contracts;
 pub mod cost_per_outcome;
 pub(crate) mod cyclomatic;
-pub mod degradation_policy;
 #[allow(dead_code)]
 pub(crate) mod local_runner;
 pub mod loop_detection;
@@ -303,7 +301,6 @@ pub mod quality_scorecard;
 pub(crate) mod safety_needles;
 pub mod scorecard;
 pub mod setup_report;
-pub(crate) mod slo;
 pub(crate) mod slow_log;
 pub(crate) mod smells;
 pub(crate) mod subagent_contract;
@@ -324,7 +321,6 @@ pub mod audit_trail;
 pub(crate) mod binary_detect;
 pub mod bounce_tracker;
 pub(crate) mod budget;
-pub mod budget_tracker;
 pub mod budgets;
 pub mod cache;
 pub(crate) mod cache_telemetry;
@@ -383,7 +379,6 @@ pub(crate) mod immune_detector;
 pub mod live_evidence_ledger;
 pub mod mcp_catalog;
 pub mod metering;
-pub mod nudge;
 pub mod ocla;
 pub mod ocla_bus;
 pub(crate) mod quality_benchmark;

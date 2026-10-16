@@ -25,7 +25,6 @@ API consumers.
 | `leanctx.cost.saved_usd` | `lean_ctx_cost_saved_usd_total` | Ledger savings priced at the recorded per-model input rate |
 | `leanctx.cache.hit_ratio` | `lean_ctx_cache_hit_rate` | Session cache effectiveness (0–1) |
 | `leanctx.compression.ratio` | `lean_ctx_compression_ratio` | Share of input removed before sending (0–1) |
-| `leanctx.slo.violations` | `lean_ctx_slo_violations_total` | Active SLO violations (see `lean-ctx slo`) |
 | `leanctx.tools.calls` / `.errors` | `lean_ctx_tool_calls{,_error}_total` | Tool call volume and failures |
 | `leanctx.info` | `lean_ctx_info` | Constant `1` carrying tags: `project`, `profile`, `agent_role`, `model`, `version` |
 
@@ -95,20 +94,17 @@ Import [`integrations/datadog/dashboard.json`](../../integrations/datadog/dashbo
 Datadog → Dashboards → New Dashboard → ⚙ → Import dashboard JSON.
 
 Widgets: savings overview (estimated vs. verified vs. USD), token flow
-(in/out/saved), cache hit ratio, SLO status, cost trend per day, compression
+(in/out/saved), cache hit ratio, cost trend per day, compression
 ratio by project. Template variables `$project`, `$agent_role`, `$model` give
 the FinOps showback drill-down.
 
 ## Monitors
 
-Import both templates via Monitors → New Monitor → Import:
+Import the template via Monitors → New Monitor → Import:
 
 - [`monitors/savings-drop.json`](../../integrations/datadog/monitors/savings-drop.json)
   — savings dropped >50 % week-over-week (warning at 30 %): catches agents
   silently bypassing lean-ctx after an editor/config change.
-- [`monitors/slo-violation.json`](../../integrations/datadog/monitors/slo-violation.json)
-  — any active SLO violation, with triage pointers into
-  `docs/runbooks/hosted-index-slo.md`.
 
 Replace `@ops-team` with your notification handle after import.
 

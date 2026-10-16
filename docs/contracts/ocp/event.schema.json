@@ -21,8 +21,6 @@
         { "$ref": "#/$defs/toolCall" },
         { "$ref": "#/$defs/agentAction" },
         { "$ref": "#/$defs/knowledgeUpdate" },
-        { "$ref": "#/$defs/budgetWarning" },
-        { "$ref": "#/$defs/budgetExhausted" },
         { "$ref": "#/$defs/policyViolation" },
         { "$ref": "#/$defs/roleChanged" },
         { "$ref": "#/$defs/extension" }
@@ -61,31 +59,6 @@
         "category": { "type": "string", "minLength": 1 },
         "key": { "type": "string" },
         "action": { "type": "string", "minLength": 1 }
-      },
-      "additionalProperties": false
-    },
-    "budgetWarning": {
-      "type": "object",
-      "required": ["type", "role", "dimension", "used", "limit", "percent"],
-      "properties": {
-        "type": { "const": "budget_warning" },
-        "role": { "type": "string", "minLength": 1 },
-        "dimension": { "type": "string", "minLength": 1 },
-        "used": { "type": "string" },
-        "limit": { "type": "string" },
-        "percent": { "type": "integer", "minimum": 0, "maximum": 255 }
-      },
-      "additionalProperties": false
-    },
-    "budgetExhausted": {
-      "type": "object",
-      "required": ["type", "role", "dimension", "used", "limit"],
-      "properties": {
-        "type": { "const": "budget_exhausted" },
-        "role": { "type": "string", "minLength": 1 },
-        "dimension": { "type": "string", "minLength": 1 },
-        "used": { "type": "string" },
-        "limit": { "type": "string" }
       },
       "additionalProperties": false
     },

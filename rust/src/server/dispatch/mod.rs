@@ -245,10 +245,6 @@ impl LeanCtxServer {
             }
 
             let crp_mode = crate::tools::CrpMode::effective();
-            let pressure_snapshot = {
-                let ledger = self.ledger.read().await;
-                Some(ledger.pressure())
-            };
             let extra_roots = self.session.read().await.extra_roots.clone();
             // The home jail scope opens other projects for reading only; the
             // session's own roots stay writable (pathjail_scope). Re-read the
@@ -275,7 +271,6 @@ impl LeanCtxServer {
                 pipeline_stats: Some(self.pipeline_stats.clone()),
                 call_count: Some(self.call_count.clone()),
                 autonomy: Some(self.autonomy.clone()),
-                pressure_snapshot,
                 path_errors,
                 bm25_cache: Some(self.bm25_cache.clone()),
                 progress_sender: Some(self.progress_sender.clone()),

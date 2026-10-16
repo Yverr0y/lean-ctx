@@ -1,6 +1,6 @@
 //! Role-based access control for agent governance.
 //!
-//! Roles define what tools an agent can use, shell policy, and resource limits.
+//! Roles define what tools an agent can use, its shell policy, and I/O boundaries.
 //! Resolution order: Env (`LEAN_CTX_ROLE`) -> Project `.lean-ctx/roles/` -> Global `~/.lean-ctx/roles/` -> Built-in.
 
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,6 @@ pub struct Role {
     pub tools: ToolPolicy,
     #[serde(default)]
     pub io: IoPolicy,
-    #[serde(default)]
-    pub limits: RoleLimits,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,51 +54,6 @@ pub struct ToolPolicy {
     pub allowed: Vec<String>,
     #[serde(default)]
     pub denied: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoleLimits {
-    #[serde(default = "default_context_tokens")]
-    pub max_context_tokens: usize,
-    #[serde(default = "default_shell_invocations")]
-    pub max_shell_invocations: usize,
-    #[serde(default = "default_cost_usd")]
-    pub max_cost_usd: f64,
-    #[serde(default = "default_warn_pct")]
-    pub warn_at_percent: u8,
-    #[serde(default = "default_block_pct")]
-    pub block_at_percent: u8,
-}
-
-impl Default for RoleLimits {
-    fn default() -> Self {
-        Self {
-            max_context_tokens: default_context_tokens(),
-            max_shell_invocations: default_shell_invocations(),
-            max_cost_usd: default_cost_usd(),
-            warn_at_percent: default_warn_pct(),
-            block_at_percent: default_block_pct(),
-        }
-    }
-}
-
-fn default_context_tokens() -> usize {
-    200_000
-}
-fn default_shell_invocations() -> usize {
-    100
-}
-fn default_cost_usd() -> f64 {
-    5.0
-}
-fn default_warn_pct() -> u8 {
-    80
-}
-fn default_block_pct() -> u8 {
-    // 255 = effectively never block (would need >255% budget usage)
-    // LeanCTX philosophy: always help, never block. Warnings are enough.
-    // Users can explicitly set block_at_percent: 100 in role config if they want blocking.
-    255
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,12 +144,6 @@ fn builtin_coder() -> Role {
             denied: vec![],
         },
         io: IoPolicy::default(),
-        limits: RoleLimits {
-            max_context_tokens: 200_000,
-            max_shell_invocations: 100,
-            max_cost_usd: 5.0,
-            ..Default::default()
-        },
     }
 }
 
@@ -216,13 +163,6 @@ pub(crate) fn closed_source_view_role() -> Role {
             denied: vec!["*".into()],
         },
         io: IoPolicy::default(),
-        limits: RoleLimits {
-            max_context_tokens: 0,
-            max_shell_invocations: 0,
-            max_cost_usd: 0.0,
-            warn_at_percent: 0,
-            block_at_percent: 0,
-        },
     }
 }
 
@@ -265,12 +205,6 @@ fn builtin_reviewer() -> Role {
             boundary_mode: "enforce".into(),
             ..Default::default()
         },
-        limits: RoleLimits {
-            max_context_tokens: 150_000,
-            max_shell_invocations: 0,
-            max_cost_usd: 3.0,
-            ..Default::default()
-        },
     }
 }
 
@@ -287,12 +221,6 @@ fn builtin_debugger() -> Role {
             denied: vec![],
         },
         io: IoPolicy::default(),
-        limits: RoleLimits {
-            max_context_tokens: 150_000,
-            max_shell_invocations: 200,
-            max_cost_usd: 5.0,
-            ..Default::default()
-        },
     }
 }
 
@@ -319,12 +247,6 @@ fn builtin_ops() -> Role {
             denied: vec!["ctx_edit".into()],
         },
         io: IoPolicy::default(),
-        limits: RoleLimits {
-            max_context_tokens: 100_000,
-            max_shell_invocations: 300,
-            max_cost_usd: 3.0,
-            ..Default::default()
-        },
     }
 }
 
@@ -346,13 +268,6 @@ fn builtin_admin() -> Role {
             allow_secret_paths: true,
             redact_outputs: true,
             allow_cross_project_search: true,
-        },
-        limits: RoleLimits {
-            max_context_tokens: 500_000,
-            max_shell_invocations: 500,
-            max_cost_usd: 50.0,
-            warn_at_percent: 90,
-            ..Default::default() // block_at_percent: 255 (never block)
         },
     }
 }
@@ -475,13 +390,6 @@ fn merge_roles(parent: &Role, child: &Role) -> Role {
             parent.io.clone()
         } else {
             child.io.clone()
-        },
-        limits: RoleLimits {
-            max_context_tokens: child.limits.max_context_tokens,
-            max_shell_invocations: child.limits.max_shell_invocations,
-            max_cost_usd: child.limits.max_cost_usd,
-            warn_at_percent: child.limits.warn_at_percent,
-            block_at_percent: child.limits.block_at_percent,
         },
     }
 }
@@ -772,12 +680,6 @@ pub mod tests {
     }
 
     #[test]
-    fn reviewer_no_shell() {
-        let r = builtin_reviewer();
-        assert_eq!(r.limits.max_shell_invocations, 0);
-    }
-
-    #[test]
     fn ops_denies_edit() {
         let r = builtin_ops();
         assert!(!r.is_tool_allowed("ctx_edit"));
@@ -786,12 +688,19 @@ pub mod tests {
     }
 
     #[test]
-    fn admin_unlimited() {
+    fn admin_allows_edit_and_shell() {
         let r = builtin_admin();
         assert!(r.is_tool_allowed("ctx_edit"));
         assert!(r.is_tool_allowed("ctx_shell"));
-        assert_eq!(r.limits.max_context_tokens, 500_000);
-        assert_eq!(r.limits.max_cost_usd, 50.0);
+    }
+
+    #[test]
+    fn legacy_limits_section_still_parses() {
+        let role: Role = toml::from_str(
+            "[role]\nname = \"legacy\"\n\n[limits]\nmax_context_tokens = 1000\nwarn_at_percent = 50\n",
+        )
+        .expect("retired [limits] section must be ignored");
+        assert_eq!(role.role.name, "legacy");
     }
 
     #[test]
@@ -806,7 +715,6 @@ pub mod tests {
                 denied: vec!["ctx_edit".into()],
             },
             io: IoPolicy::default(),
-            limits: RoleLimits::default(),
         };
         assert!(r.is_tool_allowed("ctx_read"));
         assert!(!r.is_tool_allowed("ctx_edit"));
@@ -822,7 +730,6 @@ pub mod tests {
             },
             tools: ToolPolicy::default(),
             io: IoPolicy::default(),
-            limits: RoleLimits::default(),
         };
         assert!(!r.is_shell_allowed());
     }
@@ -849,16 +756,11 @@ pub mod tests {
             },
             tools: ToolPolicy::default(),
             io: IoPolicy::default(),
-            limits: RoleLimits {
-                max_context_tokens: 50_000,
-                ..Default::default()
-            },
         };
         let merged = merge_roles(&parent, &child);
         assert_eq!(merged.role.name, "custom");
         assert_eq!(merged.role.description, "Custom reviewer");
         assert!(!merged.is_tool_allowed("ctx_edit"));
-        assert_eq!(merged.limits.max_context_tokens, 50_000);
     }
 
     #[test]
@@ -874,14 +776,6 @@ pub mod tests {
         assert!(names.contains(&"coder"));
         assert!(names.contains(&"reviewer"));
         assert!(names.contains(&"admin"));
-    }
-
-    #[test]
-    fn warn_and_block_thresholds() {
-        let r = builtin_coder();
-        assert_eq!(r.limits.warn_at_percent, 80);
-        // 255 = never block (LeanCTX philosophy: always help, never block)
-        assert_eq!(r.limits.block_at_percent, 255);
     }
 
     #[test]
@@ -986,7 +880,6 @@ pub mod tests {
                 denied: vec![],
             },
             io: IoPolicy::default(),
-            limits: RoleLimits::default(),
         };
         assert!(
             is_effectively_privileged(&role),

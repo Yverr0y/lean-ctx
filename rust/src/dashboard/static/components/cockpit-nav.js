@@ -80,7 +80,7 @@ const COCKPIT_NAV_SECTIONS = [
     tier: 'pro',
     area: 'protection',
     items: [
-      { id: 'health', label: 'Guards', desc: 'Reliability, verification, anomalies and gotcha guards.' },
+      { id: 'health', label: 'Guards', desc: 'Verification, gotcha guards, tool budget and kernel health.' },
       { id: 'protection', label: 'Risk & Policies', desc: 'Context risk warnings and the OWASP agentic-risk coverage map.' },
     ],
   },

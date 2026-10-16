@@ -143,7 +143,6 @@ pub fn check_system_health() -> SystemHealth {
 
     components.push(check_a2a_bus());
     components.push(check_ledger());
-    components.push(check_budget());
     components.push(check_dlq(dead_letter_queue()));
     components.push(check_capsule_store());
     components.push(check_response_cache());
@@ -215,26 +214,6 @@ fn check_ledger() -> ComponentHealth {
     };
     ComponentHealth {
         name: "ledger".into(),
-        status,
-        latency_ms: Some(started_at.elapsed().as_millis() as u64),
-        details: None,
-    }
-}
-
-fn check_budget() -> ComponentHealth {
-    let started_at = Instant::now();
-    let snapshot = crate::core::budget_tracker::BudgetTracker::global().check();
-    let status = match snapshot.worst_level() {
-        crate::core::budget_tracker::BudgetLevel::Ok => HealthStatus::Healthy,
-        crate::core::budget_tracker::BudgetLevel::Warning => {
-            HealthStatus::Degraded("runtime budget warning".into())
-        }
-        crate::core::budget_tracker::BudgetLevel::Exhausted => {
-            HealthStatus::Unhealthy("runtime budget exhausted".into())
-        }
-    };
-    ComponentHealth {
-        name: "budget".into(),
         status,
         latency_ms: Some(started_at.elapsed().as_millis() as u64),
         details: None,
@@ -474,7 +453,7 @@ mod tests {
         let report = check_system_health();
         assert_eq!(
             report.components.len(),
-            OclaCapabilityKind::ALL.len() + 7 + OclaRegistry::global().adapters.len()
+            OclaCapabilityKind::ALL.len() + 6 + OclaRegistry::global().adapters.len()
         );
         assert!(
             report

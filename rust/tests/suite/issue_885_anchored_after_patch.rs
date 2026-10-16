@@ -33,7 +33,6 @@ fn ctx_for(root: &std::path::Path, file: &str) -> ToolContext {
         pipeline_stats: None,
         call_count: None,
         autonomy: None,
-        pressure_snapshot: None,
         path_errors: std::collections::HashMap::new(),
         bm25_cache: None,
         progress_sender: None,

@@ -127,7 +127,6 @@ class CockpitOverview extends HTMLElement {
       '/api/gain',
       '/api/buddy',
       '/api/session',
-      '/api/slos',
       '/api/verification',
       '/api/graph/stats',
       '/api/roi',
@@ -163,14 +162,13 @@ class CockpitOverview extends HTMLElement {
       gain: ok(results[1]),
       buddy: ok(results[2]),
       session: ok(results[3]) || this._cachedSession || null,
-      slos: ok(results[4]),
-      verification: ok(results[5]),
-      graphStats: ok(results[6]),
-      roi: ok(results[7]),
-      spend: ok(results[8]),
-      workspaces: ok(results[9]),
-      kernel: ok(results[10]),
-      solution: ok(results[11]),
+      verification: ok(results[4]),
+      graphStats: ok(results[5]),
+      roi: ok(results[6]),
+      spend: ok(results[7]),
+      workspaces: ok(results[8]),
+      kernel: ok(results[9]),
+      solution: ok(results[10]),
     };
     // De-hardcode the estimated cost model's blended rate from the server.
     var Fp = fmtLib();
@@ -619,13 +617,12 @@ class CockpitOverview extends HTMLElement {
     );
   }
 
-  /* ── Status strip: session/reliability/verification/graph in one line ── */
+  /* ── Status strip: session/verification/graph in one line ── */
   // Replaces the former 4-card health row (GL #486). Same signals, one
   // compact strip — full views live in the job areas.
 
   _renderStatusStrip(esc) {
     var session = this._data.session;
-    var slos = this._data.slos;
     var verif = this._data.verification;
     var graph = this._data.graphStats;
 
@@ -635,16 +632,6 @@ class CockpitOverview extends HTMLElement {
       ? taskDesc.slice(0, 48) + '\u2026' : taskDesc;
     var filesCount = session && session.files_touched
       ? session.files_touched.length : 0;
-
-    var sloSnap = slos && slos.snapshot ? slos.snapshot : null;
-    var sloArr = sloSnap && Array.isArray(sloSnap.slos) ? sloSnap.slos : [];
-    var sloTotal = sloArr.length;
-    var sloPassed = sloArr.filter(function (s) { return !s.violated; }).length;
-    var sloPct = sloTotal > 0
-      ? Math.round((sloPassed / sloTotal) * 100) : 0;
-    var sloCol = sloPct >= 80
-      ? 'var(--green)' : sloPct >= 50
-        ? 'var(--yellow)' : 'var(--red)';
 
     var vTotal = verif ? verif.total || 0 : 0;
     var vPassed = verif ? verif.pass || 0 : 0;
@@ -673,7 +660,6 @@ class CockpitOverview extends HTMLElement {
       '<div class="card status-strip" style="margin-bottom:20px">' +
       chip('Session', '<span title="' + esc(taskDesc) + '">' + esc(shortTask) + '</span>', null, 'session_overview') +
       chip('Files touched', String(filesCount), null, null) +
-      chip('Reliability', sloPct + '% <span class="status-chip-sub">(' + sloPassed + '/' + sloTotal + ')</span>', sloCol, 'slo_compliance') +
       chip('Verification', vValue, vCol, 'verification') +
       chip('Graph', gNodes + ' nodes \u00b7 ' + gEdges + ' edges', null, 'property_graph') +
       chip('Kernel', (this._data.kernel && this._data.kernel.enabled) ? this._data.kernel.health : 'off', (this._data.kernel && this._data.kernel.health === 'healthy') ? 'var(--green)' : (this._data.kernel && this._data.kernel.health === 'degraded') ? 'var(--yellow)' : 'var(--muted)', 'kernel_status') +

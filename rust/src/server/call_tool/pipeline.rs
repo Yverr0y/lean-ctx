@@ -364,13 +364,7 @@ pub(in crate::server) async fn reversible_post_process(
                     .is_some_and(|c| crate::core::firewall::is_raw_command(&c, &config))));
 
     let pre_terse_len = result_text.len();
-    let output_tokens = {
-        let tokens = crate::core::tokens::count_tokens(&result_text) as u64;
-        crate::core::budget_tracker::BudgetTracker::global().record_tokens(tokens);
-        tokens
-    };
-
-    crate::core::anomaly::record_metric("tokens_per_call", output_tokens as f64);
+    let output_tokens = crate::core::tokens::count_tokens(&result_text) as u64;
 
     // Capture Context IR now; the lifecycle writes it after post-processing.
     let ir_intent = server.context_ir.as_ref().map(|_| {
@@ -422,15 +416,6 @@ pub(in crate::server) async fn reversible_post_process(
         }
         let correction_count = detector.correction_count();
         let retrieve_count = detector.retrieve_count();
-        if correction_count > 0 {
-            crate::core::anomaly::record_metric(
-                "correction_loop_rate",
-                f64::from(correction_count),
-            );
-        }
-        if retrieve_count > 0 {
-            crate::core::anomaly::record_metric("ccr_retrieve_rate", f64::from(retrieve_count));
-        }
         // Auto-degrade: reduce compression when the agent keeps re-fetching what
         // we squeezed out. Correction loops (re-reads/re-runs) and CCR retrieves
         // (ctx_expand/ctx_retrieve) are two views of the same "too aggressive"
@@ -443,11 +428,6 @@ pub(in crate::server) async fn reversible_post_process(
         ));
         detector.prune_corrections();
     }
-
-    // Persist anomaly detector — debounced to reduce I/O in burst sequences.
-    crate::core::anomaly::save_debounced();
-
-    let budget_warning = post_process::budget_warning_message();
 
     // Out-of-band archive + optional context firewall for large tool outputs.
     // For firewallable tools (ctx_shell/ctx_execute/ctx_search/ctx_tree) whose output
@@ -786,7 +766,6 @@ pub(in crate::server) async fn reversible_post_process(
     let auto_context = auto_context.filter(|_| legacy_context_allowed);
     let had_auto_context = auto_context.is_some();
     let mut had_legacy_context = had_auto_context;
-    let had_budget_warning = budget_warning.is_some();
     let had_throttle_warning = throttle_warning.is_some();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -826,10 +805,6 @@ pub(in crate::server) async fn reversible_post_process(
     }
     if let Some(warning) = throttle_warning {
         result_text = format!("{result_text}\n\n{warning}");
-    }
-
-    if let Some(bw) = budget_warning {
-        result_text = format!("{result_text}\n\n{bw}");
     }
 
     // Additive, best-effort reference advice. Resolver failures become empty
@@ -882,11 +857,6 @@ pub(in crate::server) async fn reversible_post_process(
                 );
             }
         }
-    }
-
-    {
-        // Evaluate SLOs for observability (watch/dashboard), but keep tool outputs clean.
-        let _ = crate::core::slo::evaluate();
     }
 
     let mut ledger_intent = None;
@@ -1387,7 +1357,7 @@ pub(in crate::server) async fn reversible_post_process(
         result.is_error = Some(true);
         record_error_category(crate::core::telemetry_v2::ErrorCategory::Internal);
     }
-    let has_dynamic = had_auto_context || had_budget_warning || had_throttle_warning;
+    let has_dynamic = had_auto_context || had_throttle_warning;
     let mut meta = rmcp::model::Meta::new();
     meta.0.insert(
         "cache_hint".to_owned(),

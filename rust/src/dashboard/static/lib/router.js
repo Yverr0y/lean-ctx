@@ -168,7 +168,7 @@ const ROUTE_DESCRIPTIONS = {
   routes: 'API routes detected in your project.',
   architecture: 'A generated report on your project structure.',
   explorer: 'Browse files and symbols as a tree.',
-  health: 'Reliability, verification, anomalies and gotcha guards.',
+  health: 'Verification, gotcha guards, tool budget and kernel health.',
   provenance: 'Checkpoint timeline and attributed file-touch evidence.',
   protection: 'Context risk warnings and the OWASP agentic-risk coverage map.',
   settings: 'Flip compression, tool profile, structure-first and terse from the UI.',

@@ -43,6 +43,15 @@ fn profile_roundtrip_toml() {
 }
 
 #[test]
+fn legacy_degradation_section_still_parses() {
+    let parsed: Profile = toml::from_str(
+        "[profile]\nname = \"legacy\"\n\n[degradation]\nenforce = true\nthrottle_ms = 500\n",
+    )
+    .expect("retired [degradation] section must be ignored");
+    assert_eq!(parsed.profile.name, "legacy");
+}
+
+#[test]
 fn engine_config_projects_consumed_mechanisms_without_changing_legacy_toml() {
     let profile = builtin_exploration();
     let before = format_as_toml(&profile);
@@ -64,7 +73,6 @@ fn engine_config_excludes_product_policy() {
     profile.budget.max_context_tokens = Some(1);
     profile.constraints.quality_floor = Some(0.1);
     profile.autonomy.auto_prefetch = Some(true);
-    profile.degradation.enforce = Some(true);
 
     let engine = profile.engine_config();
     assert_eq!(engine.read.default_mode, "map");
@@ -100,7 +108,6 @@ fn merge_child_overrides_parent() {
         capabilities: CapabilitiesConfig::default(),
         pipeline: PipelineConfig::default(),
         routing: RoutingConfig::default(),
-        degradation: DegradationConfig::default(),
         autonomy: ProfileAutonomy::default(),
         output_hints: OutputHints::default(),
     };
@@ -137,7 +144,6 @@ fn merge_partial_child_inherits_parent_fields() {
         capabilities: CapabilitiesConfig::default(),
         pipeline: PipelineConfig::default(),
         routing: RoutingConfig::default(),
-        degradation: DegradationConfig::default(),
         autonomy: ProfileAutonomy::default(),
         output_hints: OutputHints::default(),
     };
@@ -221,7 +227,6 @@ fn default_profile_has_sane_values() {
         capabilities: CapabilitiesConfig::default(),
         pipeline: PipelineConfig::default(),
         routing: RoutingConfig::default(),
-        degradation: DegradationConfig::default(),
         autonomy: ProfileAutonomy::default(),
         output_hints: OutputHints::default(),
     };

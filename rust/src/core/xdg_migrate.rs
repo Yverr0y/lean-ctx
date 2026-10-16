@@ -95,7 +95,6 @@ fn categorize(name: &str) -> Category {
         // --- cache: regenerable models, embeddings, learned patterns ---
         "semantic_cache"
         | "models"
-        | "anomaly_detector.json"
         | "autonomy_drivers_v1.json"
         | "context_ir_v1.json"
         | "thresholds_learned.json"
@@ -498,7 +497,7 @@ mod tests {
 
         touch(&src, "config.toml");
         touch(&src, "events.jsonl");
-        touch(&src, "anomaly_detector.json");
+        touch(&src, "thresholds_learned.json");
         touch(&src, "stats.json");
         touch(&src.join("sessions"), "s1.json");
         touch(&src, "daemon.pid"); // runtime stays
@@ -511,7 +510,7 @@ mod tests {
         assert!(src.join("daemon.pid").exists());
         // categories relocate
         assert!(t.state.join("events.jsonl").exists());
-        assert!(t.cache.join("anomaly_detector.json").exists());
+        assert!(t.cache.join("thresholds_learned.json").exists());
         assert!(t.data.join("stats.json").exists());
         assert!(t.data.join("sessions/s1.json").exists());
         // originals gone
@@ -520,7 +519,7 @@ mod tests {
 
         let labels: Vec<_> = report.moved.iter().map(|(n, c)| (n.as_str(), *c)).collect();
         assert!(labels.contains(&("events.jsonl", "state")));
-        assert!(labels.contains(&("anomaly_detector.json", "cache")));
+        assert!(labels.contains(&("thresholds_learned.json", "cache")));
         assert!(labels.contains(&("sessions", "data")));
         assert!(labels.contains(&("stats.json", "data")));
     }
@@ -647,7 +646,7 @@ mod tests {
         let t = targets_in(root);
         touch(&src, "events.jsonl");
         touch(&src, "config.toml");
-        touch(&src, "anomaly_detector.json");
+        touch(&src, "thresholds_learned.json");
         let names: Vec<_> = entries_to_move(&src, &t)
             .into_iter()
             .map(|m| m.name)
@@ -728,7 +727,7 @@ mod tests {
         let mixed = xc.join("lean-ctx");
         touch(&mixed, "config.toml");
         touch(&mixed, "events.jsonl");
-        touch(&mixed, "anomaly_detector.json");
+        touch(&mixed, "thresholds_learned.json");
         touch(&mixed, "stats.json");
         touch(&mixed.join("sessions"), "s.json");
 
@@ -741,7 +740,7 @@ mod tests {
             "state → XDG_STATE"
         );
         assert!(
-            xk.join("lean-ctx/anomaly_detector.json").exists(),
+            xk.join("lean-ctx/thresholds_learned.json").exists(),
             "cache → XDG_CACHE"
         );
         assert!(xd.join("lean-ctx/stats.json").exists(), "data → XDG_DATA");

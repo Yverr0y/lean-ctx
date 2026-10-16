@@ -5,7 +5,7 @@ extends = "strict-redaction"
 
 [context]
 # Art. 14(4)(e): a hard cap is the technical intervention point — runaway
-# context assembly stops here, with budget_warning fired before exhaustion.
+# context assembly stops here.
 max_context_tokens = 12000
 # Art. 26(6): deployers keep logs >= 6 months; one year covers annual audits.
 audit_retention_days = 365

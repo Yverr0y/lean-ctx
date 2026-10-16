@@ -216,19 +216,6 @@ fn part5_events() {
             key: "ocp".into(),
             action: "remember".into(),
         },
-        EventKind::BudgetWarning {
-            role: "developer".into(),
-            dimension: "tokens".into(),
-            used: "80000".into(),
-            limit: "100000".into(),
-            percent: 80,
-        },
-        EventKind::BudgetExhausted {
-            role: "developer".into(),
-            dimension: "tokens".into(),
-            used: "100001".into(),
-            limit: "100000".into(),
-        },
         EventKind::PolicyViolation {
             role: "reviewer".into(),
             tool: "ctx_shell".into(),

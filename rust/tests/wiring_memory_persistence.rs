@@ -40,56 +40,6 @@ async fn call_tool(
 
 #[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn anomaly_detector_is_persisted_from_tool_call_pipeline() {
-    let _lock = lean_ctx::core::data_dir::test_env_lock();
-    let data_dir = tempfile::tempdir().expect("data dir");
-    // SAFETY: serialized by `test_env_lock()`.
-    unsafe { std::env::set_var("LEAN_CTX_DATA_DIR", data_dir.path()) };
-
-    let dir = tempfile::tempdir().expect("project dir");
-    let file_path = dir.path().join("a.txt");
-    std::fs::write(&file_path, "hello\n").expect("write file");
-
-    let root_str = dir.path().to_string_lossy().to_string();
-    let base = lean_ctx::tools::LeanCtxServer::new_with_project_root(Some(&root_str));
-
-    let service_factory = move || Ok(base.clone());
-    let cfg = StreamableHttpServerConfig::default()
-        .with_stateful_mode(false)
-        .with_json_response(true);
-    let svc = StreamableHttpService::new(
-        service_factory,
-        Arc::new(LocalSessionManager::default()),
-        cfg,
-    );
-
-    call_tool(
-        &svc,
-        jsonrpc_call(
-            "ctx_read",
-            &json!({
-                "path": file_path.to_string_lossy().to_string(),
-                "mode": "full"
-            }),
-        ),
-    )
-    .await;
-
-    // Force save (save_debounced may skip if another test in this binary
-    // triggered a save within the 3s debounce window).
-    lean_ctx::core::anomaly::save();
-
-    assert!(
-        data_dir.path().join("anomaly_detector.json").exists(),
-        "expected anomaly_detector.json to be persisted"
-    );
-
-    // SAFETY: serialized by `test_env_lock()`.
-    unsafe { std::env::remove_var("LEAN_CTX_DATA_DIR") };
-}
-
-#[allow(clippy::await_holding_lock)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn episodic_and_procedural_memory_persist_via_ctx_session_actions() {
     let _lock = lean_ctx::core::data_dir::test_env_lock();
     let data_dir = tempfile::tempdir().expect("data dir");

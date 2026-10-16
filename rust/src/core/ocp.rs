@@ -66,32 +66,6 @@ fn export_event_kind(kind: &EventKind) -> Option<Value> {
             "key": key,
             "action": action,
         })),
-        EventKind::BudgetWarning {
-            role,
-            dimension,
-            used,
-            limit,
-            percent,
-        } => Some(json!({
-            "type": "budget_warning",
-            "role": role,
-            "dimension": dimension,
-            "used": used,
-            "limit": limit,
-            "percent": percent,
-        })),
-        EventKind::BudgetExhausted {
-            role,
-            dimension,
-            used,
-            limit,
-        } => Some(json!({
-            "type": "budget_exhausted",
-            "role": role,
-            "dimension": dimension,
-            "used": used,
-            "limit": limit,
-        })),
         EventKind::PolicyViolation { role, tool, reason } => Some(json!({
             "type": "policy_violation",
             "role": role,

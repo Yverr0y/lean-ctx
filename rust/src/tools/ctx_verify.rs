@@ -18,8 +18,6 @@ pub fn handle_proof(format: Option<&str>) -> Result<String, String> {
         }
     }
 
-    extractor.verify_budget_compliance();
-
     let proof = extractor.finalize();
 
     match format.unwrap_or("json") {
