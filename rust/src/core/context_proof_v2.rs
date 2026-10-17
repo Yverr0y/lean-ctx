@@ -24,7 +24,6 @@ pub enum ClaimKind {
     TestResult,
     TypeCheck,
     ImportPreservation,
-    BudgetCompliance,
     ScopeCompliance,
     PathjailCompliance,
     CompressionInvariant,
@@ -144,9 +143,7 @@ impl ContextProofV2 {
         self.quality_level = if failed > 0 {
             QualityLevel::Provenance
         } else if self.claims.iter().any(|c| {
-            c.kind == ClaimKind::ScopeCompliance
-                || c.kind == ClaimKind::PathjailCompliance
-                || c.kind == ClaimKind::BudgetCompliance
+            c.kind == ClaimKind::ScopeCompliance || c.kind == ClaimKind::PathjailCompliance
         }) {
             QualityLevel::PolicyChecked
         } else if self

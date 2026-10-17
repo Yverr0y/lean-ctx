@@ -31,7 +31,6 @@ This plan defines how LeanCTX evolves learned cognition drivers (layout/attentio
 - Adaptive policies:
   - `rust/src/core/mode_predictor.rs`
   - `rust/src/core/adaptive_thresholds.rs`
-  - `rust/src/core/budget_tracker.rs`
 - Verification:
   - `rust/src/core/output_verification.rs`
   - `rust/tests/scientific_verification.rs`

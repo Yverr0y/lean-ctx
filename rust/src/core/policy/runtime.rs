@@ -853,7 +853,7 @@ mod tests {
         allow_secret_paths: bool,
         allowed: &[&str],
     ) -> crate::core::roles::Role {
-        use crate::core::roles::{IoPolicy, Role, RoleLimits, RoleMeta, ToolPolicy};
+        use crate::core::roles::{IoPolicy, Role, RoleMeta, ToolPolicy};
         Role {
             role: RoleMeta {
                 name: name.into(),
@@ -870,7 +870,6 @@ mod tests {
                 allow_secret_paths,
                 ..Default::default()
             },
-            limits: RoleLimits::default(),
         }
     }
 

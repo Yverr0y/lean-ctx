@@ -20,20 +20,20 @@ fn eviction_target_display_emits_resolvable_targets() {
 
 #[test]
 fn pre_dispatch_passthrough_for_full() {
-    let result = pre_dispatch_read("src/main.rs", "full", None, None, None);
+    let result = pre_dispatch_read("src/main.rs", "full", None, None);
     assert!(result.overridden_mode.is_none());
 }
 
 #[test]
 fn pre_dispatch_passthrough_for_diff() {
-    let result = pre_dispatch_read("src/main.rs", "diff", None, None, None);
+    let result = pre_dispatch_read("src/main.rs", "diff", None, None);
     assert!(result.overridden_mode.is_none());
 }
 
 #[test]
 fn pre_dispatch_passthrough_for_anchored_window() {
     // #843: a windowed anchored:N-M read must keep its hash anchors —
-    // bounce-prevention, pressure-downgrade, etc. must not clobber it to
+    // bounce-prevention and the other heuristics must not clobber it to
     // "full" and silently drop the window.
     {
         let mut bt = crate::core::bounce_tracker::global()
@@ -52,12 +52,12 @@ fn pre_dispatch_passthrough_for_anchored_window() {
         bt.set_seq(106);
         bt.record_read("a3.yml", "full", 400, 400);
     }
-    let result = pre_dispatch_read("anchored-new.yml", "anchored:10-40", None, None, None);
+    let result = pre_dispatch_read("anchored-new.yml", "anchored:10-40", None, None);
     assert!(
         result.overridden_mode.is_none(),
         "anchored:N-M must not be overridden by bounce-prevention"
     );
-    let bare = pre_dispatch_read("anchored-new.yml", "anchored", None, None, None);
+    let bare = pre_dispatch_read("anchored-new.yml", "anchored", None, None);
     assert!(
         bare.overridden_mode.is_none(),
         "bare anchored mode must not be overridden by bounce-prevention"
@@ -83,27 +83,21 @@ fn pre_dispatch_passthrough_for_lines_multi_select() {
 
     // Precondition: the tracker really is armed for this path, so the
     // assertions below cannot pass vacuously.
-    let forced = pre_dispatch_read("multi-select-971.rs", "map", None, None, None);
+    let forced = pre_dispatch_read("multi-select-971.rs", "map", None, None);
     assert_eq!(
         forced.overridden_mode.as_deref(),
         Some("full"),
         "precondition: a recent edit must force a non-pinned mode to full"
     );
 
-    let multi = pre_dispatch_read(
-        "multi-select-971.rs",
-        "lines:620-622,1214-1218",
-        None,
-        None,
-        None,
-    );
+    let multi = pre_dispatch_read("multi-select-971.rs", "lines:620-622,1214-1218", None, None);
     assert!(
         multi.overridden_mode.is_none(),
         "lines:A-B,C-D must not be overridden by bounce-prevention (#971)"
     );
 
     // Control: the single-range form was already protected.
-    let single = pre_dispatch_read("multi-select-971.rs", "lines:620-622", None, None, None);
+    let single = pre_dispatch_read("multi-select-971.rs", "lines:620-622", None, None);
     assert!(
         single.overridden_mode.is_none(),
         "lines:A-B must not be overridden by bounce-prevention"
@@ -124,22 +118,15 @@ fn fresh_escapes_bounce_prevention() {
         bt.set_seq(302);
     }
 
-    let pinned = pre_dispatch_read("fresh-escape-1586.rs", "signatures", None, None, None);
+    let pinned = pre_dispatch_read("fresh-escape-1586.rs", "signatures", None, None);
     assert_eq!(
         pinned.overridden_mode.as_deref(),
         Some("full"),
         "precondition: the tracker must actually be armed for this path"
     );
 
-    let escaped = pre_dispatch_read_for_agent(
-        "fresh-escape-1586.rs",
-        "signatures",
-        None,
-        None,
-        None,
-        None,
-        true,
-    );
+    let escaped =
+        pre_dispatch_read_for_agent("fresh-escape-1586.rs", "signatures", None, None, None, true);
     assert!(
         escaped.overridden_mode.is_none(),
         "fresh=true must keep the requested mode reachable"
@@ -184,7 +171,6 @@ fn fresh_escapes_intent_target() {
         Some("fix context_gate overrides"),
         None,
         None,
-        None,
         true,
     );
     assert!(
@@ -211,7 +197,6 @@ fn pinned_modes_preserve_budget_warning() {
         let result = pre_dispatch_pinned_read_for_agent(&path, mode, Some(&agent_id));
         assert!(result.overridden_mode.is_none(), "mode={mode}");
         assert!(result.reason.is_none(), "mode={mode}");
-        assert!(!result.pressure_downgraded, "mode={mode}");
         assert!(!result.budget_blocked, "mode={mode}");
         assert_eq!(result.triage_filter_level, 0, "mode={mode}");
         assert!(
@@ -250,7 +235,6 @@ fn pinned_read_still_blocks_exceeded_budget() {
             .as_deref()
             .is_some_and(|warning| warning.contains("900/1000"))
     );
-    assert!(!result.pressure_downgraded);
     assert_eq!(result.triage_filter_level, 0);
 
     crate::core::agent_budget::remove(&agent_id);
@@ -258,7 +242,7 @@ fn pinned_read_still_blocks_exceeded_budget() {
 
 #[test]
 fn pre_dispatch_no_override_without_signals() {
-    let result = pre_dispatch_read("src/unknown.rs", "auto", None, None, None);
+    let result = pre_dispatch_read("src/unknown.rs", "auto", None, None);
     assert!(result.overridden_mode.is_none());
 }
 
@@ -281,80 +265,9 @@ fn pre_dispatch_bounce_prevention_forces_full() {
         bt.set_seq(6);
         bt.record_read("a3.yml", "full", 400, 400);
     }
-    let result = pre_dispatch_read("new.yml", "auto", None, None, None);
+    let result = pre_dispatch_read("new.yml", "auto", None, None);
     assert_eq!(result.overridden_mode, Some("full".to_string()));
     assert_eq!(result.reason, Some("bounce-prevention"));
-}
-
-#[test]
-fn pressure_does_not_downgrade_explicit_full() {
-    let result = pre_dispatch_read(
-        "c.rs",
-        "full",
-        None,
-        None,
-        Some(&PressureAction::ForceCompression),
-    );
-    assert!(
-        result.overridden_mode.is_none(),
-        "explicit mode=full must never be downgraded by pressure"
-    );
-    assert!(!result.pressure_downgraded);
-}
-
-#[test]
-fn pressure_does_not_downgrade_when_enforce_off() {
-    // Default profile has degradation.enforce = false, so pressure
-    // should NOT downgrade any mode.
-    let result = pre_dispatch_read(
-        "c.rs",
-        "map",
-        None,
-        None,
-        Some(&PressureAction::EvictLeastRelevant),
-    );
-    assert!(
-        result.overridden_mode.is_none(),
-        "pressure must not downgrade when degradation.enforce is off"
-    );
-    assert!(!result.pressure_downgraded);
-}
-
-#[test]
-fn no_pressure_downgrade_when_low() {
-    let result = pre_dispatch_read("c.rs", "full", None, None, Some(&PressureAction::NoAction));
-    assert!(result.overridden_mode.is_none());
-    assert!(!result.pressure_downgraded);
-}
-
-#[test]
-fn suggest_compression_does_not_downgrade_when_enforce_off() {
-    // Default profile has degradation.enforce = false
-    let result = pre_dispatch_read(
-        "c.rs",
-        "auto",
-        None,
-        None,
-        Some(&PressureAction::SuggestCompression),
-    );
-    assert!(
-        result.overridden_mode.is_none(),
-        "suggest_compression must not downgrade when enforce is off"
-    );
-    assert!(!result.pressure_downgraded);
-}
-
-#[test]
-fn suggest_compression_does_not_touch_explicit_full() {
-    let result = pre_dispatch_read(
-        "c.rs",
-        "full",
-        None,
-        None,
-        Some(&PressureAction::SuggestCompression),
-    );
-    assert!(result.overridden_mode.is_none());
-    assert!(!result.pressure_downgraded);
 }
 
 #[test]
@@ -413,7 +326,6 @@ fn overlay_pin_forces_full_mode() {
         "auto",
         None,
         Some(root.to_str().unwrap()),
-        None,
     );
     assert_eq!(result.overridden_mode, Some("full".to_string()));
     assert_eq!(result.reason, Some("pinned"));
@@ -436,139 +348,9 @@ fn overlay_exclude_forces_signatures_mode() {
     ));
     store.save_project(root).unwrap();
 
-    let result = pre_dispatch_read(
-        "src/noisy.rs",
-        "auto",
-        None,
-        Some(root.to_str().unwrap()),
-        None,
-    );
+    let result = pre_dispatch_read("src/noisy.rs", "auto", None, Some(root.to_str().unwrap()));
     assert_eq!(result.overridden_mode, Some("signatures".to_string()));
     assert_eq!(result.reason, Some("excluded"));
-}
-
-// --- pressure_downgrade unit tests (pure function) ---
-
-#[test]
-fn pressure_downgrade_suggest_auto_to_map() {
-    let result = pressure_downgrade("auto", &PressureAction::SuggestCompression);
-    assert_eq!(result, Some("map".to_string()));
-}
-
-#[test]
-fn pressure_downgrade_suggest_full_to_map() {
-    let result = pressure_downgrade("full", &PressureAction::SuggestCompression);
-    assert_eq!(result, Some("map".to_string()));
-}
-
-#[test]
-fn pressure_downgrade_suggest_does_not_touch_signatures() {
-    let result = pressure_downgrade("signatures", &PressureAction::SuggestCompression);
-    assert!(result.is_none());
-}
-
-#[test]
-fn pressure_downgrade_suggest_does_not_touch_diff() {
-    let result = pressure_downgrade("diff", &PressureAction::SuggestCompression);
-    assert!(result.is_none());
-}
-
-#[test]
-fn pressure_downgrade_force_full_to_map() {
-    let result = pressure_downgrade("full", &PressureAction::ForceCompression);
-    assert_eq!(result, Some("map".to_string()));
-}
-
-#[test]
-fn pressure_downgrade_force_auto_to_signatures() {
-    let result = pressure_downgrade("auto", &PressureAction::ForceCompression);
-    assert_eq!(result, Some("signatures".to_string()));
-}
-
-#[test]
-fn pressure_downgrade_force_map_to_signatures() {
-    let result = pressure_downgrade("map", &PressureAction::ForceCompression);
-    assert_eq!(result, Some("signatures".to_string()));
-}
-
-#[test]
-fn pressure_downgrade_force_does_not_touch_signatures() {
-    let result = pressure_downgrade("signatures", &PressureAction::ForceCompression);
-    assert!(result.is_none());
-}
-
-#[test]
-fn pressure_downgrade_force_does_not_touch_lines() {
-    let result = pressure_downgrade("lines:1-50", &PressureAction::ForceCompression);
-    assert!(result.is_none());
-}
-
-#[test]
-fn pressure_downgrade_evict_full_to_map() {
-    let result = pressure_downgrade("full", &PressureAction::EvictLeastRelevant);
-    assert_eq!(result, Some("map".to_string()));
-}
-
-#[test]
-fn pressure_downgrade_evict_auto_to_signatures() {
-    let result = pressure_downgrade("auto", &PressureAction::EvictLeastRelevant);
-    assert_eq!(result, Some("signatures".to_string()));
-}
-
-#[test]
-fn pressure_downgrade_evict_map_to_signatures() {
-    let result = pressure_downgrade("map", &PressureAction::EvictLeastRelevant);
-    assert_eq!(result, Some("signatures".to_string()));
-}
-
-#[test]
-fn pressure_downgrade_noaction_returns_none() {
-    let result = pressure_downgrade("full", &PressureAction::NoAction);
-    assert!(result.is_none());
-}
-
-#[test]
-fn pressure_downgrade_noaction_auto_returns_none() {
-    let result = pressure_downgrade("auto", &PressureAction::NoAction);
-    assert!(result.is_none());
-}
-
-// --- pre_dispatch_inner: no_degrade integration ---
-// When LCTX_NO_DEGRADE is NOT set (test default), pressure downgrade is active.
-
-#[test]
-fn pre_dispatch_does_not_downgrade_full_under_force() {
-    if std::env::var("LCTX_NO_DEGRADE").is_ok() {
-        return;
-    }
-    // Explicit mode=full is protected: pressure cannot downgrade it
-    let result = pre_dispatch_read(
-        "nd_test.rs",
-        "full",
-        None,
-        None,
-        Some(&PressureAction::ForceCompression),
-    );
-    assert!(result.overridden_mode.is_none());
-    assert!(!result.pressure_downgraded);
-}
-
-#[test]
-fn pre_dispatch_does_not_downgrade_auto_when_enforce_off() {
-    if std::env::var("LCTX_NO_DEGRADE").is_ok() {
-        return;
-    }
-    // Default profile has degradation.enforce = false, so pressure
-    // should not downgrade even non-full modes
-    let result = pre_dispatch_read(
-        "nd_test2.rs",
-        "auto",
-        None,
-        None,
-        Some(&PressureAction::EvictLeastRelevant),
-    );
-    assert!(result.overridden_mode.is_none());
-    assert!(!result.pressure_downgraded);
 }
 
 // --- estimate_read_tokens unit tests ---
@@ -607,13 +389,7 @@ fn overlay_set_view_forces_specified_mode() {
     ));
     store.save_project(root).unwrap();
 
-    let result = pre_dispatch_read(
-        "src/big.rs",
-        "auto",
-        None,
-        Some(root.to_str().unwrap()),
-        None,
-    );
+    let result = pre_dispatch_read("src/big.rs", "auto", None, Some(root.to_str().unwrap()));
     assert_eq!(result.overridden_mode, Some("map".to_string()));
     assert_eq!(result.reason, Some("overlay-set-view"));
 }

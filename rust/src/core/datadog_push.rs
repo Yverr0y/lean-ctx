@@ -238,7 +238,6 @@ fn build_series(ts: i64) -> Vec<serde_json::Value> {
         ),
     ];
 
-    let slo = crate::core::slo::evaluate_quiet();
     let verify = crate::core::output_verification::stats_snapshot();
     series.extend([
         series_entry(
@@ -259,13 +258,6 @@ fn build_series(ts: i64) -> Vec<serde_json::Value> {
             "leanctx.session.uptime_seconds",
             TYPE_GAUGE,
             snap.session_uptime_secs as f64,
-            ts,
-            &t,
-        ),
-        series_entry(
-            "leanctx.slo.violations",
-            TYPE_GAUGE,
-            slo.violations.len() as f64,
             ts,
             &t,
         ),
@@ -303,7 +295,7 @@ mod tests {
         m.record_tokens(100, 10, 500);
         let batch = build_series(1060);
         assert!(
-            batch.len() >= 12,
+            batch.len() >= 11,
             "expected full batch, got {}",
             batch.len()
         );

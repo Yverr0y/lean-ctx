@@ -64,11 +64,6 @@ pub(super) fn handle(
             let prom = crate::core::telemetry::global_metrics().to_prometheus();
             Some(("200 OK", "text/plain; version=0.0.4; charset=utf-8", prom))
         }
-        "/api/anomaly" => {
-            let s = crate::core::anomaly::summary();
-            let json = serde_json::to_string(&s).unwrap_or_else(|_| "[]".to_string());
-            Some(("200 OK", "application/json", json))
-        }
         "/api/verification" => {
             let snap = crate::core::output_verification::stats_snapshot();
             let json = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".to_string());
@@ -86,16 +81,6 @@ pub(super) fn handle(
         "/api/value" => {
             let proof = crate::core::value::proof::build(None, true);
             let json = serde_json::to_string(&proof).unwrap_or_else(|_| "{}".to_string());
-            Some(("200 OK", "application/json", json))
-        }
-        "/api/slos" => {
-            let snap = crate::core::slo::evaluate_quiet();
-            let history = crate::core::slo::violation_history(100);
-            let payload = serde_json::json!({
-                "snapshot": snap,
-                "history": history,
-            });
-            let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
             Some(("200 OK", "application/json", json))
         }
         "/api/feedback" => {

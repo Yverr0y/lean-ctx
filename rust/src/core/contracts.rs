@@ -7,7 +7,6 @@ pub const MCP_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const CONTEXT_PROOF_V1_SCHEMA_VERSION: u32 = 1;
 pub const CONTEXT_IR_V1_SCHEMA_VERSION: u32 = 1;
 pub const INTENT_ROUTE_V1_SCHEMA_VERSION: u32 = 1;
-pub const DEGRADATION_POLICY_V1_SCHEMA_VERSION: u32 = 1;
 pub const WORKFLOW_EVIDENCE_LEDGER_V1_SCHEMA_VERSION: u32 = 1;
 pub const AUTONOMY_DRIVERS_V1_SCHEMA_VERSION: u32 = 1;
 pub const TOKENIZER_TRANSLATION_DRIVER_V1_SCHEMA_VERSION: u32 = 1;
@@ -172,7 +171,6 @@ pub fn contract_docs() -> Vec<ContractDoc> {
             1,
             Stable,
         ),
-        doc("degradation-policy", "degradation-policy-v1.md", 1, Stable),
         doc("extension-trust", "extension-trust-v1.md", 1, Stable),
         doc("extractors", "extractors-v1.md", 1, Stable),
         doc("contracts-readme", "README.md", 1, Stable),
@@ -458,10 +456,6 @@ pub fn versions_kv() -> BTreeMap<&'static str, u32> {
         (
             "leanctx.contract.intent_route_v1.schema_version",
             INTENT_ROUTE_V1_SCHEMA_VERSION,
-        ),
-        (
-            "leanctx.contract.degradation_policy_v1.schema_version",
-            DEGRADATION_POLICY_V1_SCHEMA_VERSION,
         ),
         (
             "leanctx.contract.workflow_evidence_ledger_v1.schema_version",

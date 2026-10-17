@@ -19,18 +19,6 @@ fn autonomy_enabled_effective(state: &AutonomyState) -> bool {
     state.is_enabled() && profile_autonomy().enabled_effective()
 }
 
-fn policy_allows(tool: &str) -> Result<(), (String, String)> {
-    let policy = crate::core::degradation_policy::evaluate_v1_for_tool(tool, None);
-    match policy.decision.verdict {
-        crate::core::degradation_policy::DegradationVerdictV1::Ok
-        | crate::core::degradation_policy::DegradationVerdictV1::Warn => Ok(()),
-        crate::core::degradation_policy::DegradationVerdictV1::Throttle
-        | crate::core::degradation_policy::DegradationVerdictV1::Block => {
-            Err((policy.decision.reason_code, policy.decision.reason))
-        }
-    }
-}
-
 fn record_event(
     phase: AutonomyPhaseV1,
     tool: &str,
@@ -128,18 +116,6 @@ pub fn session_lifecycle_pre_hook(
     } else {
         "ctx_overview"
     };
-    if let Err((code, reason)) = policy_allows(chosen_tool) {
-        decisions.push(AutonomyDriverDecisionV1 {
-            driver: AutonomyDriverKindV1::Preload,
-            verdict: AutonomyVerdictV1::Skip,
-            reason_code: code,
-            reason,
-            detail: Some("policy guard (budget/slo)".to_string()),
-        });
-        record_event(AutonomyPhaseV1::PreCall, tool_name, None, decisions);
-        return None;
-    }
-
     // Automatic context is opportunistic: a cold graph must never put the
     // triggering interactive tool call on the synchronous graph-build path.
     // `open_best_effort` starts the lazy build and returns None until ready;
@@ -218,41 +194,29 @@ pub fn enrich_after_read(
 
     if !minimal_overhead && prof.auto_prefetch_effective() {
         let mut decisions = Vec::new();
-        if let Err((code, reason)) = policy_allows("ctx_prefetch") {
-            decisions.push(AutonomyDriverDecisionV1 {
-                driver: AutonomyDriverKindV1::Prefetch,
-                verdict: AutonomyVerdictV1::Skip,
-                reason_code: code,
-                reason,
-                detail: Some("policy guard (budget/slo)".to_string()),
-            });
-            record_event(AutonomyPhaseV1::PostRead, "ctx_read", None, decisions);
-        } else {
-            let changed = vec![file_path.to_string()];
-            let out = crate::tools::ctx_prefetch::handle(
-                cache,
-                &root,
-                task,
-                Some(&changed),
-                prof.prefetch_budget_tokens_effective(),
-                Some(prof.prefetch_max_files_effective()),
-                crp_mode,
-            );
-            let summary = out.lines().next().unwrap_or("").trim().to_string();
-            decisions.push(AutonomyDriverDecisionV1 {
-                driver: AutonomyDriverKindV1::Prefetch,
-                verdict: AutonomyVerdictV1::Run,
-                reason_code: "after_read".to_string(),
-                reason: "bounded prefetch after ctx_read".to_string(),
-                detail: if summary.is_empty() {
-                    None
-                } else {
-                    Some(summary.clone())
-                },
-            });
-            record_event(AutonomyPhaseV1::PostRead, "ctx_read", None, decisions);
-            let _ = summary;
-        }
+        let changed = vec![file_path.to_string()];
+        let out = crate::tools::ctx_prefetch::handle(
+            cache,
+            &root,
+            task,
+            Some(&changed),
+            prof.prefetch_budget_tokens_effective(),
+            Some(prof.prefetch_max_files_effective()),
+            crp_mode,
+        );
+        let summary = out.lines().next().unwrap_or("").trim().to_string();
+        decisions.push(AutonomyDriverDecisionV1 {
+            driver: AutonomyDriverKindV1::Prefetch,
+            verdict: AutonomyVerdictV1::Run,
+            reason_code: "after_read".to_string(),
+            reason: "bounded prefetch after ctx_read".to_string(),
+            detail: if summary.is_empty() {
+                None
+            } else {
+                Some(summary)
+            },
+        });
+        record_event(AutonomyPhaseV1::PostRead, "ctx_read", None, decisions);
     }
 
     result
@@ -371,19 +335,6 @@ pub fn maybe_auto_dedup(state: &AutonomyState, cache: &mut SessionCache, trigger
     }
 
     let mut decisions = Vec::new();
-    if let Err((code, reason)) = policy_allows("ctx_dedup") {
-        decisions.push(AutonomyDriverDecisionV1 {
-            driver: AutonomyDriverKindV1::Dedup,
-            verdict: AutonomyVerdictV1::Skip,
-            reason_code: code,
-            reason,
-            detail: Some("policy guard (budget/slo)".to_string()),
-        });
-        record_event(AutonomyPhaseV1::PostRead, trigger_tool, None, decisions);
-        state.dedup_applied.store(false, Ordering::SeqCst);
-        return;
-    }
-
     let out = crate::tools::ctx_dedup::handle_action(cache, "apply");
     let summary = out.lines().next().unwrap_or("").trim().to_string();
     decisions.push(AutonomyDriverDecisionV1 {
@@ -550,22 +501,6 @@ pub fn maybe_auto_response(
                 reason_code: "json_output".to_string(),
                 reason: "skip response shaping for JSON outputs".to_string(),
                 detail: None,
-            }],
-        );
-        return output.to_string();
-    }
-
-    if let Err((code, reason)) = policy_allows("ctx_response") {
-        record_event(
-            AutonomyPhaseV1::PostCall,
-            tool_name,
-            action,
-            vec![AutonomyDriverDecisionV1 {
-                driver: AutonomyDriverKindV1::Response,
-                verdict: AutonomyVerdictV1::Skip,
-                reason_code: code,
-                reason,
-                detail: Some("policy guard (budget/slo)".to_string()),
             }],
         );
         return output.to_string();

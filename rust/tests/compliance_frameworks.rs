@@ -270,30 +270,6 @@ fn aia_14_4e_budget_caps_bound_operation() {
     let policy = resolved("eu-ai-act-deployer");
     assert!(policy.max_context_tokens.expect("cap declared") > 0);
 
-    // Intervention signals exist before and at exhaustion.
-    for kind in [
-        EventKind::BudgetWarning {
-            role: "developer".into(),
-            dimension: "tokens".into(),
-            used: "9000".into(),
-            limit: "12000".into(),
-            percent: 75,
-        },
-        EventKind::BudgetExhausted {
-            role: "developer".into(),
-            dimension: "tokens".into(),
-            used: "12001".into(),
-            limit: "12000".into(),
-        },
-    ] {
-        let event = LeanCtxEvent {
-            id: 1,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            kind,
-        };
-        assert!(ocp::export_event(&event).is_some());
-    }
-
     // Violation: a pack without a cap does not earn the claim.
     let (status, _) = row_status("eu-ai-act", "AIA-14.4e", "open-source");
     assert_eq!(status, RowStatus::NotEnforced);

@@ -197,7 +197,7 @@ fn full_capsule_lifecycle() {
 fn health_reports_all_components() {
     let health = check_system_health();
     assert!(health.components.len() >= 7);
-    for name in ["a2a_bus", "ledger", "budget", "dlq"] {
+    for name in ["a2a_bus", "ledger", "dlq"] {
         assert!(
             health
                 .components

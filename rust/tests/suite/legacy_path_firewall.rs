@@ -40,7 +40,6 @@ const ALLOWLIST: &[&str] = &[
     "cli/codex_protected_cmd/write_guard.rs",
     // Group 2: pre-existing direct home-writers/readers (tracked debt).
     "report.rs",
-    "core/slo.rs",
     "core/providers/config_provider/discovery.rs",
     "cli/wrapped_publish.rs",
     "cli/dispatch/analytics/gain.rs",

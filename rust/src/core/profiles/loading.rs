@@ -1,8 +1,8 @@
 use super::builtins::{builtin_coder, builtin_profile, builtin_profiles};
 use super::types::{
     BudgetConfig, CapabilitiesConfig, CapabilityBinding, CompressionConfig, ConstraintsConfig,
-    DegradationConfig, LayoutConfig, OutputHints, PipelineConfig, Profile, ProfileAutonomy,
-    ProfileMeta, ReadConfig, RoutingConfig, TranslationConfig,
+    LayoutConfig, OutputHints, PipelineConfig, Profile, ProfileAutonomy, ProfileMeta, ReadConfig,
+    RoutingConfig, TranslationConfig,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -294,13 +294,6 @@ pub(super) fn merge_profiles(parent: Profile, child: Profile) -> Profile {
             .degrade_under_pressure
             .or(parent.routing.degrade_under_pressure),
     };
-    let degradation = DegradationConfig {
-        enforce: child.degradation.enforce.or(parent.degradation.enforce),
-        throttle_ms: child
-            .degradation
-            .throttle_ms
-            .or(parent.degradation.throttle_ms),
-    };
     let autonomy = ProfileAutonomy {
         enabled: child.autonomy.enabled.or(parent.autonomy.enabled),
         auto_preload: child.autonomy.auto_preload.or(parent.autonomy.auto_preload),
@@ -406,7 +399,6 @@ pub(super) fn merge_profiles(parent: Profile, child: Profile) -> Profile {
         capabilities,
         pipeline,
         routing,
-        degradation,
         autonomy,
         output_hints,
     }

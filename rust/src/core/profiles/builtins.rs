@@ -1,7 +1,7 @@
 use super::types::{
-    BudgetConfig, CapabilitiesConfig, CompressionConfig, ConstraintsConfig, DegradationConfig,
-    LayoutConfig, OutputHints, PipelineConfig, Profile, ProfileAutonomy, ProfileMeta, ReadConfig,
-    RoutingConfig, TranslationConfig,
+    BudgetConfig, CapabilitiesConfig, CompressionConfig, ConstraintsConfig, LayoutConfig,
+    OutputHints, PipelineConfig, Profile, ProfileAutonomy, ProfileMeta, ReadConfig, RoutingConfig,
+    TranslationConfig,
 };
 use std::collections::HashMap;
 
@@ -44,7 +44,6 @@ pub(super) fn builtin_coder() -> Profile {
         capabilities: CapabilitiesConfig::default(),
         pipeline: PipelineConfig::default(),
         routing: RoutingConfig::default(),
-        degradation: DegradationConfig::default(),
         autonomy: ProfileAutonomy {
             auto_prefetch: Some(true),
             auto_response: Some(true),
@@ -87,7 +86,6 @@ pub(super) fn builtin_exploration() -> Profile {
         capabilities: CapabilitiesConfig::default(),
         pipeline: PipelineConfig::default(),
         routing: RoutingConfig::default(),
-        degradation: DegradationConfig::default(),
         autonomy: ProfileAutonomy::default(),
         output_hints: OutputHints {
             related_hint: Some(true),
@@ -132,7 +130,6 @@ fn builtin_bugfix() -> Profile {
             max_model_tier: Some("standard".to_string()),
             ..RoutingConfig::default()
         },
-        degradation: DegradationConfig::default(),
         autonomy: ProfileAutonomy {
             checkpoint_interval: Some(10),
             ..ProfileAutonomy::default()
@@ -174,7 +171,6 @@ fn builtin_hotfix() -> Profile {
             max_model_tier: Some("fast".to_string()),
             ..RoutingConfig::default()
         },
-        degradation: DegradationConfig::default(),
         autonomy: ProfileAutonomy {
             checkpoint_interval: Some(5),
             ..ProfileAutonomy::default()
@@ -215,7 +211,6 @@ fn builtin_ci_debug() -> Profile {
             max_model_tier: Some("standard".to_string()),
             ..RoutingConfig::default()
         },
-        degradation: DegradationConfig::default(),
         autonomy: ProfileAutonomy::default(),
         output_hints: OutputHints::default(),
     }
@@ -256,7 +251,6 @@ fn builtin_review() -> Profile {
             max_model_tier: Some("standard".to_string()),
             ..RoutingConfig::default()
         },
-        degradation: DegradationConfig::default(),
         autonomy: ProfileAutonomy::default(),
         output_hints: OutputHints {
             verify_footer: Some(true),
@@ -306,10 +300,6 @@ fn builtin_passthrough() -> Profile {
             translation: Some(false),
         },
         routing: RoutingConfig::default(),
-        degradation: DegradationConfig {
-            enforce: Some(false),
-            ..DegradationConfig::default()
-        },
         autonomy: ProfileAutonomy::default(),
         output_hints: OutputHints::default(),
     }

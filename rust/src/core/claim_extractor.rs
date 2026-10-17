@@ -61,19 +61,6 @@ impl ClaimExtractor {
         ));
     }
 
-    pub fn verify_budget_compliance(&mut self) {
-        let snapshot = crate::core::budget_tracker::BudgetTracker::global().check();
-        let level = snapshot.worst_level();
-        let passed = *level != crate::core::budget_tracker::BudgetLevel::Exhausted;
-
-        self.proof.add_claim(policy_claim(
-            "budget_compliance",
-            &format!("Budget level: {level}"),
-            ClaimKind::BudgetCompliance,
-            passed,
-        ));
-    }
-
     pub fn verify_signatures_preserved(&mut self, original: &[String], compressed: &[String]) {
         let mut missing = Vec::new();
         for sig in original {

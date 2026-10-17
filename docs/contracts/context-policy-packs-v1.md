@@ -143,7 +143,7 @@ is gated and behavior is identical to a pack-less install.
 | `deny_tools` / `allow_tools` | `server::policy_guard` in `call_tool_guarded`, right after the role guard | a denied tool returns a `[POLICY DENIED]` result and is audited (`ToolDenied`); an `allow_tools` allowlist is exclusive |
 | `[redaction]` | `call_tool_guarded`, before the result reaches the model and the out-of-band archive | each match becomes `[REDACTED:<name>]`, on top of the built-in secret rules |
 | `default_read_mode` | `ctx_read`, only when the caller omits `mode` | the pack default replaces auto/profile selection (an explicit `mode` always wins; line windows may still narrow it) |
-| `max_context_tokens` | `core::budget_tracker::check` | tightens (never loosens) the per-session token ceiling; the agent hits the normal budget warning/exhausted path |
+| `max_context_tokens` | `core::engine_interface::context_plan::materialize` | caps the token budget of every materialized context plan (the smaller of plan budget and pack cap wins) |
 | `[filters]` (#675) | `call_tool_guarded`, same outbound chokepoint as `[redaction]` | each detector (`pii`/`classification`/`injection`) can `warn`/`redact`/`block`; a `block` replaces the content with a `[POLICY BLOCKED]` refusal so it never reaches the model |
 | `[egress]` (#676) | `call_tool_guarded`, **before dispatch** of `ctx_edit` writes and `ctx_shell`/`ctx_execute` actions | a forbidden pattern, a detected secret/PII (`block_secrets`) or an exceeded `max_writes_per_min` returns a `[POLICY BLOCKED]` result and is audited (`ToolDenied`) — the write never touches disk, the command never runs |
 

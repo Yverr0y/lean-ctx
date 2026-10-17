@@ -145,14 +145,6 @@ impl LeanCtxServer {
         let output_token_count_u64 = output_token_count as u64;
         let name_owned = name.to_string();
         tokio::task::spawn_blocking(move || {
-            let pricing = crate::core::gain::model_pricing::ModelPricing::load();
-            // Honors a declared model for MCP-only IDEs (`[cost.models]`/default).
-            let quote = pricing.quote_for_client(&client_name);
-            let cost_usd = quote
-                .cost
-                .estimate_usd(input_token_count, output_token_count_u64, 0, 0);
-            crate::core::budget_tracker::BudgetTracker::global().record_cost_usd(cost_usd);
-
             let mut store = crate::core::a2a::cost_attribution::CostStore::load();
             store.record_tool_call(
                 &agent_key,

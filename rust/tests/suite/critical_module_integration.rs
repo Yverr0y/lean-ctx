@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Integration tests for modules identified as critical during the architecture audit.
-// Covers: pathjail, degradation_policy, gotcha_tracker/learn, cache CCR.
+// Covers: pathjail, gotcha_tracker/learn, cache CCR.
 
 // ---------------------------------------------------------------------------
 // pathjail: security-critical path containment
@@ -29,31 +29,6 @@ fn pathjail_allows_safe_path() {
 
     let result = pathjail::jail_path(&safe, &jail);
     assert!(result.is_ok(), "path inside jail must be allowed");
-}
-
-// ---------------------------------------------------------------------------
-// degradation_policy: must evaluate without panic
-// ---------------------------------------------------------------------------
-#[test]
-fn degradation_policy_evaluates_for_known_tool() {
-    use lean_ctx::core::degradation_policy::evaluate_v1_for_tool;
-
-    let policy = evaluate_v1_for_tool("ctx_read", Some("2025-01-01T00:00:00Z"));
-    assert_eq!(policy.schema_version, 1);
-    assert_eq!(policy.tool, "ctx_read");
-    assert!(
-        !policy.decision.reason.is_empty(),
-        "`policy.decision.reason` is empty"
-    );
-}
-
-#[test]
-fn degradation_policy_evaluates_for_unknown_tool() {
-    let policy = lean_ctx::core::degradation_policy::evaluate_v1_for_tool(
-        "nonexistent_tool",
-        Some("2025-01-01T00:00:00Z"),
-    );
-    assert_eq!(policy.tool, "nonexistent_tool");
 }
 
 // ---------------------------------------------------------------------------

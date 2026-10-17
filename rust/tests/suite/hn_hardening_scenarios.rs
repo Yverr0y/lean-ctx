@@ -504,15 +504,6 @@ mod auto_degrade {
     }
 
     #[test]
-    fn scenario_degradation_policy_reports_correction_rate_high() {
-        let src = include_str!("../../src/core/degradation_policy.rs");
-        assert!(
-            src.contains("correction_rate_high"),
-            "degradation policy must have correction_rate_high reason_code"
-        );
-    }
-
-    #[test]
     fn scenario_server_degrade_thresholds() {
         use lean_ctx::core::config::CompressionLevel;
         use lean_ctx::core::config::SessionDegrade::{Clear, Leave, Set};

@@ -1,6 +1,5 @@
 use serde::Serialize;
 
-use crate::core::budget_tracker::{BudgetLevel, BudgetSnapshot};
 use crate::core::context_ledger::PressureAction;
 use crate::core::intent_engine::{IntentDimension, ModelTier, TaskType, classify, route_intent};
 
@@ -21,7 +20,6 @@ pub(crate) struct IntentRouteInputsV1 {
     pub task_type: TaskType,
     pub confidence: f64,
     pub dimension: IntentDimension,
-    pub budgets: BudgetSnapshot,
     pub pressure: PressureSummaryV1,
     pub policy_md5: String,
 }
@@ -59,22 +57,19 @@ pub(crate) struct IntentRouteDecisionV1 {
     pub effective_model_tier: ModelTier,
     pub recommended_read_mode: String,
     pub effective_read_mode: String,
-    pub degraded_by_budget: bool,
+    pub degraded_by_tier_cap: bool,
     pub degraded_by_pressure: bool,
     pub reason: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct RouteInputs {
-    pub tokens_level: BudgetLevel,
-    pub cost_level: BudgetLevel,
     pub pressure_action: PressureAction,
     pub pressure_utilization: f64,
     pub pressure_remaining_tokens: usize,
 }
 
 pub(crate) fn route_v1(query: &str) -> IntentRouteV1 {
-    let budgets = crate::core::budget_tracker::BudgetTracker::global().check();
     let ledger = crate::core::context_ledger::ContextLedger::load();
     let pressure = ledger.pressure();
     let profile_name = crate::core::profiles::active_profile_name();
@@ -82,8 +77,6 @@ pub(crate) fn route_v1(query: &str) -> IntentRouteV1 {
     let role_name = crate::core::roles::active_role_name();
 
     let inputs = RouteInputs {
-        tokens_level: budgets.tokens.level.clone(),
-        cost_level: budgets.cost.level.clone(),
         pressure_action: pressure.recommendation,
         pressure_utilization: pressure.utilization,
         pressure_remaining_tokens: pressure.remaining_tokens,
@@ -94,7 +87,6 @@ pub(crate) fn route_v1(query: &str) -> IntentRouteV1 {
         &role_name,
         &profile_name,
         &profile.routing,
-        budgets,
         &inputs,
         None,
     )
@@ -105,7 +97,6 @@ pub(crate) fn route_v1_with(
     role_name: &str,
     profile_name: &str,
     routing: &crate::core::profiles::RoutingConfig,
-    budgets: BudgetSnapshot,
     inputs: &RouteInputs,
     created_at_override: Option<&str>,
 ) -> IntentRouteV1 {
@@ -127,14 +118,11 @@ pub(crate) fn route_v1_with(
     ));
 
     let recommended_model_tier = base.model_tier;
-    let tokens_level = inputs.tokens_level.clone();
-    let cost_level = inputs.cost_level.clone();
-    let (effective_model_tier, degraded_by_budget) = apply_budget_caps(
+    let effective_model_tier = cap_to(
         recommended_model_tier,
-        tokens_level.clone(),
-        cost_level.clone(),
-        routing,
+        parse_tier_cap(routing.max_model_tier_effective()),
     );
+    let degraded_by_tier_cap = effective_model_tier != recommended_model_tier;
 
     let recommended_read_mode =
         read_mode_for_tier(recommended_model_tier, classification.task_type);
@@ -151,10 +139,8 @@ pub(crate) fn route_v1_with(
         recommended_tier: recommended_model_tier,
         effective_tier: effective_model_tier,
         read_mode: effective_read_mode.clone(),
-        degraded_by_budget,
+        degraded_by_tier_cap,
         degraded_by_pressure,
-        tokens_level,
-        cost_level,
         pressure: inputs.pressure_action,
     });
 
@@ -169,7 +155,6 @@ pub(crate) fn route_v1_with(
             task_type: classification.task_type,
             confidence: classification.confidence,
             dimension: base.dimension,
-            budgets,
             pressure: PressureSummaryV1 {
                 utilization_pct: (inputs.pressure_utilization * 100.0).min(254.0) as u8,
                 remaining_tokens: inputs.pressure_remaining_tokens,
@@ -182,47 +167,10 @@ pub(crate) fn route_v1_with(
             effective_model_tier,
             recommended_read_mode,
             effective_read_mode,
-            degraded_by_budget,
+            degraded_by_tier_cap,
             degraded_by_pressure,
             reason,
         },
-    }
-}
-
-fn apply_budget_caps(
-    tier: ModelTier,
-    tokens_level: BudgetLevel,
-    cost_level: BudgetLevel,
-    routing: &crate::core::profiles::RoutingConfig,
-) -> (ModelTier, bool) {
-    let mut out = tier;
-    let mut degraded = false;
-
-    // Hard cap from profile policy.
-    out = cap_to(out, parse_tier_cap(routing.max_model_tier_effective()));
-    if out != tier {
-        degraded = true;
-    }
-
-    // Budget-based caps (recommendation only; never blocks).
-    let max_budget = worst_budget_level(tokens_level, cost_level);
-    out = match max_budget {
-        BudgetLevel::Ok => out,
-        BudgetLevel::Warning => cap_to(out, ModelTier::Standard),
-        BudgetLevel::Exhausted => cap_to(out, ModelTier::Fast),
-    };
-    if out != tier {
-        degraded = true;
-    }
-
-    (out, degraded)
-}
-
-fn worst_budget_level(a: BudgetLevel, b: BudgetLevel) -> BudgetLevel {
-    match (a, b) {
-        (BudgetLevel::Exhausted, _) | (_, BudgetLevel::Exhausted) => BudgetLevel::Exhausted,
-        (BudgetLevel::Warning, _) | (_, BudgetLevel::Warning) => BudgetLevel::Warning,
-        _ => BudgetLevel::Ok,
     }
 }
 
@@ -284,24 +232,21 @@ struct ReasonInputs {
     recommended_tier: ModelTier,
     effective_tier: ModelTier,
     read_mode: String,
-    degraded_by_budget: bool,
+    degraded_by_tier_cap: bool,
     degraded_by_pressure: bool,
-    tokens_level: BudgetLevel,
-    cost_level: BudgetLevel,
     pressure: PressureAction,
 }
 
 fn build_reason(i: &ReasonInputs) -> String {
     format!(
-        "task={} dim={} tier={}→{} read={} budget={} pressure={:?} degrade(budget={},pressure={})",
+        "task={} dim={} tier={}→{} read={} pressure={:?} degrade(tier_cap={},pressure={})",
         i.task_type.as_str(),
         i.dimension.as_str(),
         i.recommended_tier.as_str(),
         i.effective_tier.as_str(),
         i.read_mode,
-        worst_budget_level(i.tokens_level.clone(), i.cost_level.clone()),
         i.pressure,
-        i.degraded_by_budget,
+        i.degraded_by_tier_cap,
         i.degraded_by_pressure
     )
 }
@@ -316,39 +261,11 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::budget_tracker::{BudgetLevel, CostStatus, DimensionStatus};
-
-    fn budget(level: BudgetLevel) -> BudgetSnapshot {
-        BudgetSnapshot {
-            role: "coder".to_string(),
-            tokens: DimensionStatus {
-                used: 1,
-                limit: 1,
-                percent: 100,
-                level: level.clone(),
-            },
-            shell: DimensionStatus {
-                used: 0,
-                limit: 0,
-                percent: 0,
-                level: BudgetLevel::Ok,
-            },
-            cost: CostStatus {
-                used_usd: 0.0,
-                limit_usd: 0.0,
-                percent: 0,
-                level,
-            },
-        }
-    }
 
     #[test]
     fn routing_is_deterministic_for_same_inputs() {
         let r = crate::core::profiles::RoutingConfig::default();
-        let b = budget(BudgetLevel::Ok);
         let inputs = RouteInputs {
-            tokens_level: BudgetLevel::Ok,
-            cost_level: BudgetLevel::Ok,
             pressure_action: PressureAction::NoAction,
             pressure_utilization: 0.1,
             pressure_remaining_tokens: 1000,
@@ -358,7 +275,6 @@ mod tests {
             "coder",
             "bugfix",
             &r,
-            b.clone(),
             &inputs,
             Some("2026-01-01T00:00:00Z"),
         );
@@ -367,7 +283,6 @@ mod tests {
             "coder",
             "bugfix",
             &r,
-            b,
             &inputs,
             Some("2026-01-01T00:00:00Z"),
         );
@@ -378,15 +293,12 @@ mod tests {
     }
 
     #[test]
-    fn budget_caps_premium_to_fast_when_exhausted() {
+    fn profile_tier_cap_limits_model_tier() {
         let routing = crate::core::profiles::RoutingConfig {
-            max_model_tier: Some("premium".to_string()),
+            max_model_tier: Some("fast".to_string()),
             ..Default::default()
         };
-        let b = budget(BudgetLevel::Exhausted);
         let inputs = RouteInputs {
-            tokens_level: BudgetLevel::Exhausted,
-            cost_level: BudgetLevel::Ok,
             pressure_action: PressureAction::NoAction,
             pressure_utilization: 0.1,
             pressure_remaining_tokens: 1000,
@@ -396,21 +308,17 @@ mod tests {
             "coder",
             "exploration",
             &routing,
-            b,
             &inputs,
             Some("2026-01-01T00:00:00Z"),
         );
         assert_eq!(r.decision.effective_model_tier, ModelTier::Fast);
-        assert!(r.decision.degraded_by_budget);
+        assert!(r.decision.degraded_by_tier_cap);
     }
 
     #[test]
     fn pressure_forces_degraded_mode() {
         let routing = crate::core::profiles::RoutingConfig::default();
-        let b = budget(BudgetLevel::Ok);
         let inputs = RouteInputs {
-            tokens_level: BudgetLevel::Ok,
-            cost_level: BudgetLevel::Ok,
             pressure_action: PressureAction::EvictLeastRelevant,
             pressure_utilization: 0.95,
             pressure_remaining_tokens: 100,
@@ -420,7 +328,6 @@ mod tests {
             "coder",
             "review",
             &routing,
-            b,
             &inputs,
             Some("2026-01-01T00:00:00Z"),
         );

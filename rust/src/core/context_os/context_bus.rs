@@ -610,7 +610,9 @@ impl ContextBus {
             let mut rows = stmt.query(params![limit])?;
             let mut observations = Vec::new();
             while let Some(row) = rows.next()? {
-                observations.push(decode_row(row)?);
+                if let Some(observation) = decode_row(row)? {
+                    observations.push(observation);
+                }
             }
             Ok(observations)
         })();
@@ -633,7 +635,10 @@ impl ContextBus {
             let mut rows = stmt.query(params![limit])?;
             let mut events = Vec::new();
             while let Some(row) = rows.next()? {
-                let LocalObservationPayload::Legacy(event) = decode_row(row)?.payload else {
+                let Some(observation) = decode_row(row)? else {
+                    continue;
+                };
+                let LocalObservationPayload::Legacy(event) = observation.payload else {
                     return Err(ObservationPersistenceError::InvalidRow(
                         "non-legacy observation in legacy projection".into(),
                     ));

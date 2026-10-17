@@ -948,12 +948,6 @@ impl Default for GainConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CostConfig {
-    /// Per-session cost cap in USD. When accumulated cost exceeds this value,
-    /// subsequent tool calls receive a `[COST CAP]` warning instead of the
-    /// normal output (#794). 0 = unlimited (default).
-    /// Override at runtime: `LEAN_CTX_COST_CAP_OVERRIDE=1` bypasses the cap.
-    #[serde(default)]
-    pub max_session_cost_usd: f64,
     /// Fallback pricing model for any client without a per-client entry.
     /// Unset/empty → lean-ctx keeps its blended heuristic.
     #[serde(default, skip_serializing_if = "Option::is_none")]

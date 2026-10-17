@@ -54,7 +54,6 @@ before interpreting them as a current product or licensing statement.
 - [context-candidate-admission-v1.md](context-candidate-admission-v1.md) — Context candidate admission.
 - [context-policy-packs-v1.md](context-policy-packs-v1.md) — Policy packs.
 - [context-quality-v1.md](context-quality-v1.md) — Evidence tiers, eval verdicts, retention probes, quality receipt.
-- [degradation-policy-v1.md](degradation-policy-v1.md) — Degradation policy.
 - [knowledge-policy-contract-v1.md](knowledge-policy-contract-v1.md) — Knowledge policy.
 - [persona-spec-v1.md](persona-spec-v1.md) — Persona specification.
 - [quality-loop-v1.md](quality-loop-v1.md) — Quality-loop policy.

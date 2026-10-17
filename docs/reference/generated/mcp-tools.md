@@ -475,7 +475,7 @@ Parameters: `path`, `task`*
 
 ## `ctx_proof`
 
-Export machine-readable ContextProofV1 (Verifier, SLO, Pipeline, Provenance).
+Export machine-readable ContextProofV1 (Verifier, Pipeline, Provenance).
 WORKFLOW: call after completing a task to generate audit trail.
 ANTIPATTERN: not for budget analysis — use ctx_radar/ctx_metrics instead.
 action=export (only valid); format=json|summary|both; write=true|false;

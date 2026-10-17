@@ -106,7 +106,6 @@ Status of every contract document (SSOT: `rust/src/core/contracts.rs::contract_d
 | Autonomy Drivers | `docs/contracts/autonomy-drivers-v1.md` | 1 | stable |
 | Conformance | `docs/contracts/conformance-v1.md` | 1 | stable |
 | OCLA Verifier Conformance | `docs/contracts/ocla-verifier-conformance-v1.md` | 1 | stable |
-| Degradation Policy | `docs/contracts/degradation-policy-v1.md` | 1 | stable |
 | Extension Trust | `docs/contracts/extension-trust-v1.md` | 1 | stable |
 | Extractors | `docs/contracts/extractors-v1.md` | 1 | stable |
 | Gotchas/Reminders | `docs/contracts/gotchas-reminders-contract-v1.md` | 1 | stable |
@@ -153,7 +152,6 @@ leanctx.contract.mcp_manifest.schema_version=1
 leanctx.contract.context_proof_v1.schema_version=1
 leanctx.contract.context_ir_v1.schema_version=1
 leanctx.contract.intent_route_v1.schema_version=1
-leanctx.contract.degradation_policy_v1.schema_version=1
 leanctx.contract.workflow_evidence_ledger_v1.schema_version=1
 leanctx.contract.autonomy_drivers_v1.schema_version=1
 leanctx.contract.tokenizer_translation_driver_v1.schema_version=1
@@ -213,13 +211,7 @@ A git-anchored, signed, point-in-time record of the context-layer state — line
 
 ## Runtime Contracts
 
-Govern how the runtime processes, budgets, and degrades context.
-
-### Degradation Policy v1 (Budgets/SLOs)
-
-- **Doc**: `docs/contracts/degradation-policy-v1.md`
-- **Runtime source**: `rust/src/core/degradation_policy.rs`
-- **Surface**: Enforced at tool-call boundary when enabled
+Govern how the runtime processes and records context.
 
 ### Workflow Evidence Ledger v1
 

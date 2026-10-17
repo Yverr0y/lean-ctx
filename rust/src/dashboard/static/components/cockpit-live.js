@@ -35,9 +35,6 @@ var EVENT_COLORS = {
   verification_warn: 'var(--yellow)',
   verification_crit: 'var(--red)',
   policy: 'var(--red)',
-  slo: 'var(--red)',
-  budget_warn: 'var(--yellow)',
-  budget_crit: 'var(--red)',
 };
 
 var EVENT_ICONS = {
@@ -55,9 +52,6 @@ var EVENT_ICONS = {
   verification_warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
   verification_crit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
   policy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
-  slo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
-  budget_warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>',
-  budget_crit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>',
 };
 
 var FILTER_LABELS = {
@@ -243,45 +237,6 @@ function flattenEvent(ev) {
         explanation: eventExplanation(t),
         ts: ts,
       };
-    case 'SloViolation':
-    case 'SLOViolation':
-      return {
-        type: t,
-        category: 'slo',
-        color: EVENT_COLORS.slo,
-        icon: EVENT_ICONS.slo,
-        title: 'violated · ' + (kind.metric || kind.name || ''),
-        saved: 0,
-        detail: buildSloDetail(kind),
-        explanation: eventExplanation('SloViolation'),
-        ts: ts,
-      };
-    case 'BudgetWarning':
-      return {
-        type: t,
-        id: evId,
-        category: 'budget_warn',
-        color: EVENT_COLORS.budget_warn,
-        icon: EVENT_ICONS.budget_warn,
-        title: 'budget · role:' + (kind.role || 'agent') + ' ' + (kind.dimension || 'tokens') + ' ' + (kind.percent || '?') + '%',
-        saved: 0,
-        detail: (kind.used || '?') + ' / ' + (kind.limit || '?'),
-        explanation: eventExplanation('BudgetWarning'),
-        ts: ts,
-      };
-    case 'BudgetExhausted':
-      return {
-        type: t,
-        id: evId,
-        category: 'budget_crit',
-        color: EVENT_COLORS.budget_crit,
-        icon: EVENT_ICONS.budget_crit,
-        title: 'budget exhausted · role:' + (kind.role || 'agent') + ' ' + (kind.dimension || 'tokens'),
-        saved: 0,
-        detail: (kind.used || '?') + ' / ' + (kind.limit || '?'),
-        explanation: eventExplanation('BudgetExhausted'),
-        ts: ts,
-      };
     default:
       return {
         type: t || 'unknown',
@@ -335,10 +290,7 @@ var EVENT_EXPLANATIONS = {
   KnowledgeUpdate: 'The persistent knowledge base was updated with new information. This improves future sessions.',
   ThresholdShift: 'Adaptive compression thresholds were recalibrated based on observed data patterns. This self-tuning is automatic — no action needed.',
   VerificationWarning: 'Output quality verification detected a potential issue. If severity is "warning", the output was still delivered. "Critical" means content may have been degraded.',
-  PolicyViolation: 'A tool call was blocked by an active policy rule (e.g. budget limit, file-type restriction). Check your lean-ctx profile if this is unexpected.',
-  SloViolation: 'An internal quality metric (SLO) was breached. This is lean-ctx monitoring itself — e.g. compression ratio fell below target. Occasional violations are normal; frequent ones may indicate a configuration issue.',
-  BudgetWarning: 'Session token/shell/cost budget approaching the limit for the active role. "role:" shows the lean-ctx role (default: "coder"), not a provider or product. Adjust limits in ~/.lean-ctx/roles/<role>.toml or raise warn_at_percent.',
-  BudgetExhausted: 'Session budget for this role has been exceeded. Further tool calls may be restricted. Adjust limits in ~/.lean-ctx/roles/<role>.toml or start a new session.',
+  PolicyViolation: 'A tool call was blocked by an active policy rule (e.g. denied tool, file-type restriction). Check your lean-ctx profile if this is unexpected.',
 };
 
 function eventExplanation(eventType) {
@@ -398,16 +350,6 @@ function buildExpandedSolutionDetail(kind) {
   if (kind.decision) rows.push(['Decision', String(kind.decision)]);
   if (kind.rationale) rows.push(['Rationale', String(kind.rationale)]);
   return rows;
-}
-
-function buildSloDetail(kind) {
-  var parts = [];
-  if (kind.metric || kind.name) parts.push(String(kind.metric || kind.name));
-  if (kind.actual != null && kind.target != null) {
-    parts.push('actual ' + Number(kind.actual).toFixed(2) + ' vs target ' + Number(kind.target).toFixed(2));
-  }
-  if (kind.detail) parts.push(String(kind.detail));
-  return parts.join(' · ');
 }
 
 function buildExpandedToolDetail(kind) {
@@ -1048,7 +990,7 @@ class CockpitLive extends HTMLElement {
       '<h3 style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.18em;font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:8px">' +
       'Event Feed <span class="badge">' + esc(String(count)) + '</span></h3>' +
       '<p class="hs" style="margin:-4px 0 10px;font-size:11px;opacity:.7">' +
-      'Token Flow contains payload-bearing calls only. Intelligence contains solution, knowledge, policy, budget and agent-control events; those do not represent uncompressed payloads.</p>' +
+      'Token Flow contains payload-bearing calls only. Intelligence contains solution, knowledge, policy and agent-control events; those do not represent uncompressed payloads.</p>' +
       '<div id="ckl-event-list" style="display:flex;flex-direction:column;gap:6px">' +
       rendered +
       '</div></div>'

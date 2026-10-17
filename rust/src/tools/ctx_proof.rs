@@ -2,7 +2,6 @@ use std::path::Path;
 
 use crate::core::context_ir::{ContextIrV1, write_project_context_ir};
 use crate::core::context_proof::{ProofOptions, ProofSources, collect_v1, write_project_proof};
-use crate::core::degradation_policy::{evaluate_v1_for_tool, write_project_degradation_policy};
 
 pub fn handle_export(
     project_root: &str,
@@ -23,17 +22,14 @@ pub fn handle_export(
     let mut out = String::new();
     let mut written: Option<String> = None;
     let mut written_ir: Option<String> = None;
-    let mut written_degradation: Option<String> = None;
     let mut written_autonomy: Option<String> = None;
     let mut written_architecture_json: Option<String> = None;
     let mut written_architecture_html: Option<String> = None;
     if write {
         let root = Path::new(project_root);
         let ts = chrono::Utc::now().format("%Y-%m-%d_%H%M%S").to_string();
-        let created_at = chrono::Utc::now().to_rfc3339();
         let default_proof_name = format!("context-proof-v1_{ts}.json");
         let ir_name = format!("context-ir-v1_{ts}.json");
-        let degradation_name = format!("degradation-policy-v1_{ts}.json");
         let autonomy_name = format!("autonomy-drivers-v1_{ts}.json");
         let architecture_json_name = format!("architecture-overview-v1_{ts}.json");
         let architecture_html_name = format!("architecture-overview-v1_{ts}.html");
@@ -45,20 +41,11 @@ pub fn handle_export(
         let ir_path = write_project_context_ir(root, &ir, Some(&ir_name))?;
         written_ir = Some(ir_path.to_string_lossy().to_string());
 
-        let policy = evaluate_v1_for_tool("ctx_proof", Some(&created_at));
-        let policy_path = write_project_degradation_policy(root, &policy, Some(&degradation_name))?;
-        written_degradation = Some(policy_path.to_string_lossy().to_string());
-
         {
             let ts = chrono::Utc::now();
             let mut ledger = crate::core::evidence_ledger::EvidenceLedgerV1::load();
             let _ = ledger.record_artifact_file("proof:context-proof-v1", path.as_path(), ts);
             let _ = ledger.record_artifact_file("proof:context-ir-v1", ir_path.as_path(), ts);
-            let _ = ledger.record_artifact_file(
-                "proof:degradation-policy-v1",
-                policy_path.as_path(),
-                ts,
-            );
             let _ = ledger.save();
         }
 
@@ -144,9 +131,6 @@ pub fn handle_export(
             if let Some(p) = written_ir {
                 out.push_str(&format!("context_ir_path: {p}\n"));
             }
-            if let Some(p) = written_degradation {
-                out.push_str(&format!("degradation_policy_path: {p}\n"));
-            }
             if let Some(p) = written_autonomy {
                 out.push_str(&format!("autonomy_drivers_path: {p}\n"));
             }
@@ -176,9 +160,6 @@ pub fn handle_export(
             if let Some(p) = &written_ir {
                 out.push_str(&format!("[context_ir_path: {p}]\n\n"));
             }
-            if let Some(p) = &written_degradation {
-                out.push_str(&format!("[degradation_policy_path: {p}]\n\n"));
-            }
             if let Some(p) = &written_autonomy {
                 out.push_str(&format!("[autonomy_drivers_path: {p}]\n\n"));
             }
@@ -196,9 +177,6 @@ pub fn handle_export(
             }
             if let Some(p) = &written_ir {
                 out.push_str(&format!("[context_ir_path: {p}]\n\n"));
-            }
-            if let Some(p) = &written_degradation {
-                out.push_str(&format!("[degradation_policy_path: {p}]\n\n"));
             }
             if let Some(p) = &written_autonomy {
                 out.push_str(&format!("[autonomy_drivers_path: {p}]\n\n"));

@@ -83,7 +83,6 @@ impl ServerHandler for LeanCtxServer {
         *self.peer.write().await = Some(context.peer.clone());
 
         if self.session_mode != crate::tools::SessionMode::Shared {
-            crate::core::budget_tracker::BudgetTracker::global().reset();
             if let Ok(data_dir) = crate::core::data_dir::lean_ctx_data_dir() {
                 let radar = data_dir.join("context_radar.jsonl");
                 if radar.exists() {

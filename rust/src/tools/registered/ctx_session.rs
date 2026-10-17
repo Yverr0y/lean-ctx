@@ -35,15 +35,12 @@ fn handle_compact_action(
                 .to_string(),
             Some(summary) => {
                 match crate::core::compact_directive::create(keep, summary.to_string()) {
-                    Ok(()) => {
-                        crate::core::nudge::record_recovery();
-                        format!(
-                            "Compaction armed (keeps last {keep} user turns verbatim). It applies \
+                    Ok(()) => format!(
+                        "Compaction armed (keeps last {keep} user turns verbatim). It applies \
                          to your NEXT request onward, only outside the provider-cached \
                          prefix, at tool-pair-safe boundaries. Undo any time: \
                          ctx_session action=\"restore\"."
-                        )
-                    }
+                    ),
                     Err(reason) => reason,
                 }
             }

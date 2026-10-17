@@ -357,8 +357,6 @@ pub struct ToolContext {
     pub call_count: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// Autonomy state for search repeat detection.
     pub autonomy: Option<std::sync::Arc<crate::core::autonomy::AutonomyState>>,
-    /// Pre-computed context pressure snapshot for synchronous gate decisions.
-    pub pressure_snapshot: Option<crate::core::context_ledger::ContextPressure>,
     /// Errors from path resolution (PathJail rejection, secret path, etc.).
     /// Keyed by argument name (e.g. "path" -> "path escapes project root: ...").
     pub path_errors: std::collections::HashMap<String, String>,
@@ -399,7 +397,6 @@ impl Default for ToolContext {
             pipeline_stats: None,
             call_count: None,
             autonomy: None,
-            pressure_snapshot: None,
             path_errors: std::collections::HashMap::new(),
             bm25_cache: None,
             progress_sender: None,

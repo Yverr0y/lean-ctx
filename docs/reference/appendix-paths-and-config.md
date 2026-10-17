@@ -18,7 +18,7 @@ the **config dir can be mounted read-only**. Typed resolvers live in
 | **Config** | `$XDG_CONFIG_HOME/lean-ctx` (`~/.config/lean-ctx`) | `LEAN_CTX_CONFIG_DIR` | `config.toml`, `env.sh`, `shell-hook.*` — **RO-safe** |
 | **Data** | `$XDG_DATA_HOME/lean-ctx` (`~/.local/share/lean-ctx`) | `LEAN_CTX_DATA_DIR` | `sessions/`, `vectors/`, `graphs/`, `knowledge/`, `archives/`, `memory/`, `packages/`, `agents/`, `stats.json`, `client-id.json` |
 | **State** | `$XDG_STATE_HOME/lean-ctx` (`~/.local/state/lean-ctx`) | `LEAN_CTX_STATE_DIR` | `events.jsonl`, `journal.md`, `*.log`, `mcp-live.json`, `heatmap.json`, `pipeline_stats.json`, `cost_attribution.json`, `context_ledger.json`, `cooccurrence/`, `tee/`, `dashboard.token`, `agent_runtime_env.json` (`0600`) |
-| **Cache** | `$XDG_CACHE_HOME/lean-ctx` (`~/.cache/lean-ctx`) | `LEAN_CTX_CACHE_DIR` | `semantic_cache/`, `models/`, `anomaly_detector.json`, `*_learned.json`, `litm_calibration.json`, `context_ir_v1.json`, `latest-version.json`, `.first_run_wow_done` |
+| **Cache** | `$XDG_CACHE_HOME/lean-ctx` (`~/.cache/lean-ctx`) | `LEAN_CTX_CACHE_DIR` | `semantic_cache/`, `models/`, `*_learned.json`, `litm_calibration.json`, `context_ir_v1.json`, `latest-version.json`, `.first_run_wow_done` |
 | **Runtime** | `dirs::data_local_dir()/lean-ctx` | — | `daemon.pid`, `daemon.sock`, `daemon-*.log`, `*.lock` |
 
 Unix dir permissions: `0700`. The **Runtime** dir is the OS data-local dir

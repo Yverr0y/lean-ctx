@@ -115,9 +115,13 @@ pub(crate) fn validate_identity(
 }
 
 /// Validate persisted metadata before either reader projects a payload.
+///
+/// Returns `Ok(None)` for a legacy record whose event kind this build retired
+/// (see `events::is_retired_event_record`): such rows are valid history from an
+/// older release and are skipped instead of failing the whole projection.
 pub(crate) fn decode_row(
     row: &rusqlite::Row<'_>,
-) -> Result<LocalObservationV1, ObservationPersistenceError> {
+) -> Result<Option<LocalObservationV1>, ObservationPersistenceError> {
     if row.get::<_, i64>(6)? != 1 {
         return Err(ObservationPersistenceError::InvalidRow(
             "unsupported local observation schema".into(),
@@ -151,6 +155,9 @@ pub(crate) fn decode_row(
             LocalObservationPayload::Ocla(serde_json::from_str(&payload_json)?)
         }
         LocalObservationSource::Legacy => {
+            if crate::core::events::is_retired_event_record(&payload_json) {
+                return Ok(None);
+            }
             let event: LeanCtxEvent = serde_json::from_str(&payload_json)?;
             if event.id != source_id || event.timestamp != source_timestamp {
                 return Err(ObservationPersistenceError::InvalidRow(
@@ -160,14 +167,14 @@ pub(crate) fn decode_row(
             LocalObservationPayload::Legacy(event)
         }
     };
-    Ok(LocalObservationV1 {
+    Ok(Some(LocalObservationV1 {
         cursor_id,
         producer_instance,
         source_id,
         source_timestamp,
         source,
         payload,
-    })
+    }))
 }
 
 pub(crate) fn producer_instance() -> &'static str {

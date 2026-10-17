@@ -94,7 +94,7 @@ pub fn endpoints() -> Vec<EndpointDoc> {
             method: "GET",
             path: "/v1/metrics",
             auth: "bearer",
-            summary: "JSON metrics snapshot (slo block; ?format=prometheus for text exposition)",
+            summary: "JSON metrics snapshot (?format=prometheus for text exposition)",
         },
     ]
 }

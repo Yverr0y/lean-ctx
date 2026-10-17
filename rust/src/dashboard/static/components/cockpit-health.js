@@ -1,9 +1,7 @@
 /**
- * Health dashboard — SLOs, Anomalies, Verification, Bug Memory.
+ * Health dashboard — Verification, Bug Memory, Tool Budget, Kernel.
  */
 var CKH_TABS = [
-  { id: 'slos', label: 'SLOs' },
-  { id: 'anomalies', label: 'Anomalies' },
   { id: 'verification', label: 'Verification' },
   { id: 'bugmemory', label: 'Bug Memory' },
   { id: 'toolbudget', label: 'Tool Budget' },
@@ -18,10 +16,6 @@ function ckhFmt() {
   return window.LctxFmt || {};
 }
 
-function ckhCharts() {
-  return window.LctxCharts || {};
-}
-
 function tip(k) {
   return window.LctxShared && window.LctxShared.tip ? window.LctxShared.tip(k) : '';
 }
@@ -31,11 +25,9 @@ function tip(k) {
 class CockpitHealth extends HTMLElement {
   constructor() {
     super();
-    this._tab = 'slos';
+    this._tab = 'verification';
     this._loading = true;
     this._error = null;
-    this._sloData = null;
-    this._anomalyData = null;
     this._verificationData = null;
     this._gotchaData = null;
     this._toolBudgetData = null;
@@ -54,20 +46,11 @@ class CockpitHealth extends HTMLElement {
 
   disconnectedCallback() {
     document.removeEventListener('lctx:refresh', this._onRefresh);
-    this._destroyCharts();
   }
 
   _onRefresh() {
     var v = document.getElementById('view-health');
     if (v && v.classList.contains('active')) this.loadData();
-  }
-
-  _destroyCharts() {
-    var Ch = ckhCharts();
-    if (!Ch.destroyIfNeeded) return;
-    this.querySelectorAll('canvas[id^="ckh-"]').forEach(function (c) {
-      Ch.destroyIfNeeded(c.id);
-    });
   }
 
   /* ---- data ---- */
@@ -85,12 +68,6 @@ class CockpitHealth extends HTMLElement {
     this.render();
 
     var results = await Promise.all([
-      fetchJson('/api/slos', { timeoutMs: 10000 }).catch(function (e) {
-        return { __error: e && e.error ? e.error : String(e || 'error') };
-      }),
-      fetchJson('/api/anomaly', { timeoutMs: 10000 }).catch(function (e) {
-        return { __error: e && e.error ? e.error : String(e || 'error') };
-      }),
       fetchJson('/api/verification', { timeoutMs: 10000 }).catch(function (e) {
         return { __error: e && e.error ? e.error : String(e || 'error') };
       }),
@@ -105,21 +82,17 @@ class CockpitHealth extends HTMLElement {
       }),
     ]);
 
-    this._sloData = results[0] && !results[0].__error ? results[0] : null;
-    this._anomalyData = results[1] && !results[1].__error ? results[1] : null;
-    this._verificationData = results[2] && !results[2].__error ? results[2] : null;
-    this._gotchaData = results[3] && !results[3].__error ? results[3] : null;
-    this._toolBudgetData = results[4] && !results[4].__error ? results[4] : null;
-    this._kernelData = results[5] && !results[5].__error ? results[5] : null;
+    this._verificationData = results[0] && !results[0].__error ? results[0] : null;
+    this._gotchaData = results[1] && !results[1].__error ? results[1] : null;
+    this._toolBudgetData = results[2] && !results[2].__error ? results[2] : null;
+    this._kernelData = results[3] && !results[3].__error ? results[3] : null;
 
-    if (!this._sloData && !this._anomalyData &&
-        !this._verificationData && !this._gotchaData && !this._toolBudgetData) {
+    if (!this._verificationData && !this._gotchaData && !this._toolBudgetData) {
       this._error = 'Could not load health data';
     }
 
     this._loading = false;
     this.render();
-    this._renderSloCharts();
   }
 
   /* ---- chrome ---- */
@@ -133,8 +106,7 @@ class CockpitHealth extends HTMLElement {
         '<div class="card"><div class="loading-state">Loading health data\u2026</div></div>';
       return;
     }
-    if (this._error && !this._sloData && !this._anomalyData &&
-        !this._verificationData && !this._gotchaData) {
+    if (this._error && !this._verificationData && !this._gotchaData) {
       this.innerHTML =
         '<div class="card"><h3>Error</h3>' +
         '<p class="hs" style="color:var(--red)">' + esc(String(this._error)) + '</p></div>';
@@ -159,8 +131,6 @@ class CockpitHealth extends HTMLElement {
   }
 
   _renderTabContent(esc) {
-    if (this._tab === 'slos') return this._renderSLOs(esc);
-    if (this._tab === 'anomalies') return this._renderAnomalies(esc);
     if (this._tab === 'verification') return this._renderVerification(esc);
     if (this._tab === 'bugmemory') return this._renderBugMemory(esc);
     if (this._tab === 'toolbudget') return this._renderToolBudget(esc);
@@ -172,143 +142,10 @@ class CockpitHealth extends HTMLElement {
     var self = this;
     this.querySelectorAll('[data-ckh-tab]').forEach(function (tab) {
       tab.addEventListener('click', function () {
-        self._destroyCharts();
         self._tab = tab.getAttribute('data-ckh-tab');
         self.render();
-        self._renderSloCharts();
       });
     });
-  }
-
-  /* ============ SLOs ============ */
-
-  _renderSLOs(esc) {
-    var F = ckhFmt();
-    var ff = F.ff || function (n) { return String(n); };
-    var slo = this._sloData;
-
-    var sloArr = slo && slo.snapshot && Array.isArray(slo.snapshot.slos)
-      ? slo.snapshot.slos : [];
-    if (sloArr.length === 0) {
-      return (
-        '<div class="card"><div class="empty-state">' +
-        '<h2>No SLO Data</h2>' +
-        '<p>SLO tracking starts when the daemon monitors service metrics.</p>' +
-        '</div></div>'
-      );
-    }
-
-    var total = sloArr.length;
-    var passed = sloArr.filter(function (s) { return !s.violated; }).length;
-    var failing = total - passed;
-
-    var summary =
-      '<div class="hero r3 stagger" style="margin-bottom:16px">' +
-      '<div class="hc"><span class="hl">Total SLOs</span>' +
-      '<div class="hv">' + esc(ff(total)) + '</div></div>' +
-      '<div class="hc"><span class="hl">Passing</span>' +
-      '<div class="hv" style="color:var(--green)">' + esc(ff(passed)) + '</div></div>' +
-      '<div class="hc"><span class="hl">Failing</span>' +
-      '<div class="hv" style="color:' +
-      (failing > 0 ? 'var(--red)' : 'var(--muted)') + '">' +
-      esc(ff(failing)) + '</div></div></div>';
-
-    var cards = '<div class="row r3">';
-    for (var i = 0; i < sloArr.length; i++) {
-      var r = sloArr[i];
-      var ok = !r.violated;
-      var cls = ok ? 'tg' : 'td';
-      var label = ok ? 'PASS' : 'FAIL';
-      var val = r.actual != null
-        ? (typeof r.actual === 'number' ? r.actual.toFixed(2) : String(r.actual))
-        : '\u2014';
-
-      cards +=
-        '<div class="card">' +
-        '<div class="card-header"><h3>' + esc(r.name || 'SLO ' + (i + 1)) + '</h3>' +
-        '<span class="tag ' + cls + '">' + label + '</span></div>' +
-        '<div class="sr"><span class="sl">Metric</span>' +
-        '<span class="sv">' + esc(r.metric || '\u2014') + '</span></div>' +
-        '<div class="sr"><span class="sl">Threshold</span>' +
-        '<span class="sv">' + esc(r.threshold != null ? String(r.threshold) : '\u2014') + '</span></div>' +
-        '<div class="sr"><span class="sl">Current</span>' +
-        '<span class="sv">' + esc(val) + '</span></div>' +
-        '<canvas id="ckh-slo-' + i + '" height="80" style="margin-top:12px"></canvas>' +
-        '</div>';
-    }
-    cards += '</div>';
-    return summary + cards;
-  }
-
-  _renderSloCharts() {
-    if (this._tab !== 'slos') return;
-    var Ch = ckhCharts();
-    if (!Ch.lineChart || typeof Chart === 'undefined') return;
-    var slo = this._sloData;
-    if (!slo) return;
-
-    var sloArr = slo.snapshot && Array.isArray(slo.snapshot.slos)
-      ? slo.snapshot.slos : [];
-    var globalHistory = Array.isArray(slo.history) ? slo.history : [];
-    for (var i = 0; i < sloArr.length; i++) {
-      var canvasId = 'ckh-slo-' + i;
-      if (!document.getElementById(canvasId)) continue;
-
-      var hist = globalHistory;
-
-      var labels = [];
-      var values = [];
-      for (var j = 0; j < hist.length; j++) {
-        var h = hist[j];
-        labels.push(h.timestamp ? String(h.timestamp).slice(5, 10) : String(j));
-        values.push(h.violations != null ? h.violations : (h.value != null ? h.value : 0));
-      }
-      if (labels.length === 0) continue;
-
-      var ok = !sloArr[i].violated;
-      var color = ok ? '#34d399' : '#f87171';
-      var fill = ok ? 'rgba(52,211,153,.06)' : 'rgba(248,113,113,.06)';
-      try { Ch.lineChart(canvasId, labels, values, color, fill); } catch (_) {}
-    }
-  }
-
-  /* ============ Anomalies ============ */
-
-  _renderAnomalies(esc) {
-    var anomalies = Array.isArray(this._anomalyData) ? this._anomalyData : [];
-    if (anomalies.length === 0) {
-      return (
-        '<div class="card"><div class="empty-state">' +
-        '<h2>No Anomalies</h2>' +
-        '<p>No anomalies detected. System is operating normally.</p>' +
-        '</div></div>'
-      );
-    }
-
-    var html = '<div style="display:flex;flex-direction:column;gap:10px">';
-    for (var i = 0; i < anomalies.length; i++) {
-      var a = anomalies[i];
-      var stdDev = typeof a.std_dev === 'number' ? a.std_dev : 0;
-      var isHigh = stdDev > 0 && Math.abs(a.last_value - a.mean) > 2 * stdDev;
-      var border = isHigh ? 'var(--yellow)' : 'var(--blue)';
-      var cls = isHigh ? 'ty' : 'tb';
-      var statusLabel = isHigh ? 'outlier' : 'normal';
-
-      html +=
-        '<div class="card" style="border-left:3px solid ' + border + '">' +
-        '<div class="card-header"><h3>' + esc(a.metric || 'Metric') + '</h3>' +
-        '<span class="tag ' + cls + '">' + esc(statusLabel) + '</span></div>' +
-        '<div class="sr"><span class="sl">Last value</span>' +
-        '<span class="sv">' + esc(typeof a.last_value === 'number' ? a.last_value.toFixed(2) : '\u2014') + '</span></div>' +
-        '<div class="sr"><span class="sl">Mean</span>' +
-        '<span class="sv">' + esc(typeof a.mean === 'number' ? a.mean.toFixed(2) : '\u2014') + '</span></div>' +
-        '<div class="sr"><span class="sl">Std dev</span>' +
-        '<span class="sv">' + esc(stdDev.toFixed(2)) + '</span></div>' +
-        '<div class="sr"><span class="sl">Samples</span>' +
-        '<span class="sv">' + esc(String(a.count || 0)) + '</span></div>' +
-        '</div>';
-    }
-    return html + '</div>';
   }
 
   /* ============ Verification ============ */

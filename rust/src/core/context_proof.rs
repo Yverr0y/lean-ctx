@@ -42,8 +42,6 @@ pub(crate) struct ContextProofV1 {
     pub project: ProjectIdentity,
     pub role: RoleIdentity,
     pub profile: ProfileIdentity,
-    pub budgets: crate::core::budget_tracker::BudgetSnapshot,
-    pub slo: crate::core::slo::SloSnapshot,
     pub pipeline: crate::core::pipeline::PipelineStats,
     pub verification: crate::core::output_verification::VerificationSnapshot,
     pub ledger: LedgerSummary,
@@ -141,8 +139,6 @@ pub(crate) fn collect_v1(sources: ProofSources, opts: ProofOptions) -> ContextPr
         (None, None)
     };
 
-    let budgets = crate::core::budget_tracker::BudgetTracker::global().check();
-    let slo = crate::core::slo::evaluate_quiet();
     let verification = crate::core::output_verification::stats_snapshot();
 
     let pipeline = sources
@@ -221,8 +217,6 @@ pub(crate) fn collect_v1(sources: ProofSources, opts: ProofOptions) -> ContextPr
             name: profile_name,
             policy_md5: profile_policy_md5,
         },
-        budgets,
-        slo,
         pipeline,
         verification,
         ledger: ledger_summary,
