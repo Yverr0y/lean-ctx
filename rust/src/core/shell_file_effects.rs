@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! Which files a shell command reads or rewrites, for bounce accounting.
 //!
 //! The bounce tracker books a correction when a lossy compressed view of a
