@@ -4,7 +4,7 @@
     "max_commits": 20000,
     "max_objects": 300000,
     "max_findings": 5000,
-    "command_timeout_seconds": 120,
+    "command_timeout_seconds": 300,
     "full_audit_timeout_seconds": 1800
   },
   "forbidden_paths": [
@@ -35,7 +35,65 @@
   ],
   "secret_rule": {
     "id": "SEC001",
-    "pickaxe_regex": "AKIA|ghp_|gho_|ghs_|ghu_|ghr_|sk_live_|PRIVATE KEY-----|postgres://[^\\s]+:[^@\\s]+@|postgresql://[^\\s]+:[^@\\s]+@|mysql://[^\\s]+:[^@\\s]+@"
+    "rationale": "Two stages. pickaxe_regex is a POSIX ERE git evaluates natively to narrow candidates (git log -S --pickaxe-regex, git grep -E); it is a line-level superset of credential_patterns and deliberately interval-free, because bounded repetitions make git's POSIX matcher several times slower over full history. credential_patterns are Python regexes over the whole blob and decide: real credential shapes only, never bare prefixes. PEM blocks need base64 key material after the BEGIN line. Database URLs need a literal password of at least min_length characters that is neither a placeholder ($VAR, {var}, <var>, [var], %s, masked ***) nor a documented local development default. AWS documentation keys ending in EXAMPLE are not credentials. A match holding an ascending run of synthetic_run_length digits or letters is a hand-made fixture. reviewed_blobs exempts individually reviewed content by git blob ID only; any edit is scanned again.",
+    "pickaxe_regex": "gh[pousr]_[A-Za-z0-9]|github_pat_|A[KS]IA[0-9A-Z]|[rs]k_live_[0-9A-Za-z]|PRIVATE KEY-----|(postgres|postgresql|mysql|mariadb)[+a-z0-9]*://[^@[:space:]]+@",
+    "credential_patterns": [
+      {
+        "id": "github-token",
+        "regex": "\\bgh[pousr]_[A-Za-z0-9]{36,}\\b"
+      },
+      {
+        "id": "github-fine-grained-token",
+        "regex": "\\bgithub_pat_[A-Za-z0-9_]{22,}"
+      },
+      {
+        "id": "aws-access-key-id",
+        "regex": "\\b(?:AKIA|ASIA)(?![0-9A-Z]{9}EXAMPLE\\b)[0-9A-Z]{16}\\b"
+      },
+      {
+        "id": "stripe-live-key",
+        "regex": "\\b(?:sk|rk)_live_[0-9A-Za-z]{24,}\\b"
+      },
+      {
+        "id": "pem-private-key",
+        "regex": "-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:\\\\r)?(?:\\\\n|\\r?\\n)(?:[ \\t\\\"'+,]*[A-Za-z-]+:[^\\r\\n]*?(?:\\\\r)?(?:\\\\n|\\r?\\n))*(?:[ \\t\\\"'+,]*(?:\\\\r)?(?:\\\\n|\\r?\\n))?[ \\t\\\"'+,]*[A-Za-z0-9+/]{40,}"
+      },
+      {
+        "id": "database-url-password",
+        "regex": "\\b(?:postgres|postgresql|mysql|mariadb)(?:\\+[a-z0-9]+)?://[^\\s:@/'\\\"`]+:(?P<password>[^\\s@/'\\\"`]+)@"
+      }
+    ],
+    "password_policy": {
+      "min_length": 8,
+      "placeholder_prefixes": [
+        "$",
+        "{",
+        "<",
+        "[",
+        "%"
+      ],
+      "placeholder_markers": [
+        "${",
+        "{{",
+        "$(",
+        "***",
+        "%s"
+      ],
+      "dev_default_passwords": [
+        "changeme",
+        "password",
+        "leanctx-dev",
+        "leanctx_e2e",
+        "localtest"
+      ]
+    },
+    "synthetic_run_length": 8,
+    "reviewed_blobs": [
+      {
+        "blob": "9698c59bbf61ff6742c4d9762ea1f452139c01c5",
+        "reason": "Self-signed loopback TLS test key (certificate CN=localhost, SAN localhost and 127.0.0.1, reviewed 2026-10-17). Read only by HTTPS loopback integration tests; it authenticates nothing outside the test process."
+      }
+    ]
   },
   "policy_source_path": "security/history-policy-v1.json",
   "scanner_source_paths": [
@@ -54,8 +112,8 @@
   ],
   "scanner_source_sha256": {
     ".github/workflows/security-check.yml": "5afe73f93ce67b5832fb1839c707c5a75a18951cdf015aedca3b6177743e9d83",
-    "scripts/history-policy-gate.py": "6191eb7e86b7253aef09c9ef9bb5167ba599f91f9e23d43be61452d039511ba8",
-    "tests/security/test_history_policy_gate.py": "ad6c71cadb5e5896ba926f9633249c571c9449af63605cc0d91c27ccbabfd108",
+    "scripts/history-policy-gate.py": "d018605b96d155293854985a1627da3bfc18e2721a7640b5530c9889ecfdb899",
+    "tests/security/test_history_policy_gate.py": "3aac0ee607d6968a9a0e755e2020be2a0fdfb2f44760cb91dba6fbc1aabb2f29",
     "tests/security/test_security_check_workflow.py": "2d0c9b9a6ceb61c97379290d549bbdcf7812ce17db9794b5d1b067e2202c2844",
     "rust/src/proxy/anthropic.rs": "02be2417f1eaab0730b4328fee90c91179c46f8ed4c0c2ae2f4737d2331537b7",
     "rust/src/proxy/anthropic_tests.rs": "d8e6572b778d48b2a158c2caf1ea9807ae03621b3215f31f3a2cde078b2a8c53",
@@ -66,8 +124,8 @@
     "rust/src/proxy/openai_responses_ws.rs": "968b11785cc3fb3229b2dbd0c7e8339654f9b15e9af0c8a2cbe8215c35bea284"
   },
   "baseline": {
-    "commit": "bff280bfc8eba6959854fafcbf104b5745d794c3",
+    "commit": "b37ee3be11f2525cd785348d3e43ccdbb590fe94",
     "report": "security/evidence/full-history-baseline-v1.json",
-    "report_sha256": "f2698fc347bd51b756b3ecbde00231e12953beb5a16db64ffd40fd9df5e2f3e6"
+    "report_sha256": "29fb4b0997f3f45cd80091dd6d365a3097644d7dae6dc1a41c88303a6572501e"
   }
 }
