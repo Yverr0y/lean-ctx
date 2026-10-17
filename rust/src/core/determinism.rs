@@ -455,6 +455,7 @@ mod tests {
         bounce.record_read("src/lib.rs", "map", 100_000, 1_000_000);
         bounce.next_seq();
         bounce.record_read("src/lib.rs", "full", 1_000_000, 1_000_000);
+        bounce.flush_pending();
         let economics = ProviderCacheStats::default().economics(
             &ModelPricing::embedded(),
             Some("claude-opus-4.5"),

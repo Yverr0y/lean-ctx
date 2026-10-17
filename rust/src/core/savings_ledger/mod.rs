@@ -84,8 +84,10 @@ fn repo_hash() -> &'static str {
     })
 }
 
-fn agent_id() -> &'static str {
-    crate::core::agent_identity::current_agent_id()
+/// Per-agent attribution of each event (client + bus identity, or host);
+/// see [`crate::core::agent_identity::ledger_agent_id`].
+fn agent_id() -> String {
+    crate::core::agent_identity::ledger_agent_id()
 }
 
 /// The tokenizer family the **ledger** denominates savings in: the active
@@ -141,7 +143,7 @@ fn new_event(tool: &str) -> SavingsEvent {
         unit_price_per_m_usd: *price_per_m,
         saved_usd: 0.0,
         repo_hash: repo_hash().to_string(),
-        agent_id: agent_id().to_string(),
+        agent_id: agent_id(),
         prev_hash: String::new(),
         entry_hash: String::new(),
         version: env!("CARGO_PKG_VERSION").to_string(),

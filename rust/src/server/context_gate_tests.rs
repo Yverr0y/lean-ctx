@@ -264,10 +264,43 @@ fn pre_dispatch_bounce_prevention_forces_full() {
         bt.record_read("a3.yml", "map", 30, 400);
         bt.set_seq(6);
         bt.record_read("a3.yml", "full", 400, 400);
+        // Bounces are provisional until their edit window passes.
+        bt.flush_pending();
     }
     let result = pre_dispatch_read("new.yml", "auto", None, None);
     assert_eq!(result.overridden_mode, Some("full".to_string()));
     assert_eq!(result.reason, Some("bounce-prevention"));
+}
+
+#[test]
+fn learned_full_applies_to_explicit_compressing_modes() {
+    let path = "learned-full-gate-496.cfg";
+    let norm = crate::core::pathutil::normalize_tool_path(path);
+    crate::core::path_mode_memory::record_bounce(&norm);
+    crate::core::path_mode_memory::record_bounce(&norm);
+
+    for mode in [
+        "map",
+        "signatures",
+        "aggressive",
+        "entropy",
+        "task",
+        "reference",
+    ] {
+        let result = pre_dispatch_read(path, mode, None, None);
+        assert_eq!(result.overridden_mode.as_deref(), Some("full"), "{mode}");
+        assert_eq!(result.reason, Some("learned-full"), "{mode}");
+    }
+    for mode in ["lines:1-5", "diff", "raw", "anchored", "full"] {
+        let result = pre_dispatch_read(path, mode, None, None);
+        assert_ne!(
+            result.reason,
+            Some("learned-full"),
+            "{mode} stays untouched"
+        );
+    }
+    let escaped = pre_dispatch_read_for_agent(path, "map", None, None, None, true);
+    assert_ne!(escaped.reason, Some("learned-full"), "fresh=true escapes");
 }
 
 #[test]

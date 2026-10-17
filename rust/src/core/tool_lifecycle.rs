@@ -556,6 +556,17 @@ pub(crate) fn flush_all() {
     crate::core::litm_calibration::flush();
 }
 
+/// [`flush_all`] for a process that is about to exit: first commits the
+/// provisional bounces still waiting for their edit window, so a bounce
+/// detected just before shutdown reaches the ledger and the path memory that
+/// `flush_all` then persists. Not part of `flush_all` itself, which also runs
+/// after single tool executions where committing early would book a
+/// read-before-edit as a bounce.
+pub(crate) fn flush_all_at_exit() {
+    crate::core::bounce_tracker::flush_pending();
+    flush_all();
+}
+
 fn maybe_consolidate(project_root: Option<&str>, calls: u32) {
     let Some(root) = project_root else { return };
     let autonomy = crate::core::autonomy::AutonomyState::new();

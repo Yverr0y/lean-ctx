@@ -28,12 +28,14 @@ pub(super) fn handle_with_options_inner(
     // mode (auto, aggressive, signatures, density, diff, …) collapses to the
     // verbatim full read; `raw` (already verbatim) and explicit `lines:` slices
     // are left as the user asked. The default config protects nothing, so this is
-    // a fast no-op for everyone who hasn't opted in.
-    let mode = if mode != "raw"
+    // a fast no-op for everyone who hasn't opted in. Agent instruction files get
+    // the same treatment for compressing modes, as on the MCP path.
+    let mode = if (mode != "raw"
         && !mode.starts_with("lines:")
         && crate::core::config::Config::load()
             .proxy
-            .is_path_compress_protected(path)
+            .is_path_compress_protected(path))
+        || super::instruction_file_forces_full(path, mode)
     {
         "full"
     } else {

@@ -208,6 +208,15 @@ fn path_matches_target(norm: &str, target: &str) -> bool {
     })
 }
 
+/// Explicitly requested views that drop content: the lossy summaries plus
+/// `reference` and `density:`. Lossless, pinned and `auto` requests are not.
+fn is_explicit_compressing_mode(mode: &str) -> bool {
+    use crate::tools::ctx_read::ReadMode;
+    mode.parse::<ReadMode>().is_ok_and(|parsed| {
+        parsed.is_lossy_summary() || matches!(parsed, ReadMode::Reference | ReadMode::Density(_))
+    })
+}
+
 fn pre_dispatch_inner(
     path: &str,
     requested_mode: &str,
@@ -250,6 +259,23 @@ fn pre_dispatch_inner(
         return PreDispatchResult {
             overridden_mode: Some("full".to_string()),
             reason: Some("bounce-prevention"),
+            budget_blocked: false,
+            budget_warning: None,
+            triage_filter_level: 0,
+        };
+    }
+
+    // #496 learned per-path memory: a file the agent keeps re-reading in full
+    // after compressed views is delivered in full for explicit compressing
+    // modes too (`auto` consults the same memory in its resolver). The caller
+    // sees the stable `[mode overridden: … reason=learned-full …]` notice.
+    if !fresh
+        && is_explicit_compressing_mode(requested_mode)
+        && crate::core::path_mode_memory::should_force_full(path)
+    {
+        return PreDispatchResult {
+            overridden_mode: Some("full".to_string()),
+            reason: Some("learned-full"),
             budget_blocked: false,
             budget_warning: None,
             triage_filter_level: 0,

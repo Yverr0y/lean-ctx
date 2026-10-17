@@ -18,6 +18,107 @@ pub(crate) fn current_agent_id() -> &'static str {
     })
 }
 
+/// The connected client of this single-client MCP process, set once at
+/// `initialize` (see [`set_session_attribution`]).
+static SESSION_ATTRIBUTION: OnceLock<String> = OnceLock::new();
+/// Set when a second, different client initialized in the same process: the
+/// process-wide attribution is then ambiguous and is no longer used.
+static SESSION_ATTRIBUTION_CONFLICT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Attribution for savings-ledger events (`SavingsEvent::agent_id`), so
+/// corrections and savings can be told apart per agent instead of all
+/// reading `"local"`.
+///
+/// Priority (first available wins):
+/// 1. `LEAN_CTX_AGENT_ID` / `LCTX_AGENT_ID` — explicit operator identity
+///    (same value as [`current_agent_id`])
+/// 2. this process's MCP session: `<client>:<bus agent id>`, e.g.
+///    `claude-code:mcp-1274-…`, set at `initialize` for single-client servers
+/// 3. the host the process runs under (`claude`, `codex`, `cursor`) — hook and
+///    CLI processes spawned by an agent
+/// 4. `"local"`
+///
+/// Only the attribution changes: signing keys stay bound to
+/// [`current_agent_id`], and `agent_id` is an ordinary hashed field in every
+/// canonical event version, so existing entries keep verifying unchanged.
+#[must_use]
+pub(crate) fn ledger_agent_id() -> String {
+    let explicit = current_agent_id();
+    if explicit != "local" {
+        return explicit.to_string();
+    }
+    if !SESSION_ATTRIBUTION_CONFLICT.load(std::sync::atomic::Ordering::Relaxed)
+        && let Some(session) = SESSION_ATTRIBUTION.get()
+    {
+        return session.clone();
+    }
+    host_from_env(|key| std::env::var(key).ok())
+        .unwrap_or("local")
+        .to_string()
+}
+
+/// Record the MCP client and local bus identity of this process. Called once
+/// per `initialize` by single-client (personal) servers; a later initialize
+/// with a different identity marks the attribution ambiguous instead of
+/// silently re-labelling another client's events.
+pub(crate) fn set_session_attribution(client_name: &str, bus_agent_id: Option<&str>) {
+    let Some(value) = session_attribution_value(client_name, bus_agent_id) else {
+        return;
+    };
+    if let Err(value) = SESSION_ATTRIBUTION.set(value)
+        && SESSION_ATTRIBUTION.get() != Some(&value)
+    {
+        SESSION_ATTRIBUTION_CONFLICT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Bounded, ledger-safe `<client>:<bus agent id>` label.
+fn session_attribution_value(client_name: &str, bus_agent_id: Option<&str>) -> Option<String> {
+    let client = attribution_component(client_name, 48);
+    let agent = bus_agent_id.and_then(|id| attribution_component(id, 72));
+    match (client, agent) {
+        (Some(client), Some(agent)) => Some(format!("{client}:{agent}")),
+        (Some(single), None) | (None, Some(single)) => Some(single),
+        (None, None) => None,
+    }
+}
+
+/// Lowercase `[a-z0-9._-]`, other characters folded to `-`, at most `max`
+/// bytes; `None` when nothing meaningful remains.
+fn attribution_component(raw: &str, max: usize) -> Option<String> {
+    let folded: String = raw
+        .trim()
+        .chars()
+        .map(|c| {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(max)
+        .collect();
+    let trimmed = folded.trim_matches('-');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// The agent host this process was spawned by, from the markers each host
+/// sets in its children's environment.
+fn host_from_env(env: impl Fn(&str) -> Option<String>) -> Option<&'static str> {
+    let set = |key: &str| env(key).is_some_and(|v| !v.trim().is_empty());
+    if set("CLAUDECODE") {
+        Some("claude")
+    } else if set("CODEX_THREAD_ID") {
+        Some("codex")
+    } else if set("CURSOR_TASK_ID") {
+        Some("cursor")
+    } else {
+        None
+    }
+}
+
 /// Identity of this process in the cross-agent delivery registry (#1904).
 ///
 /// Unlike [`current_agent_id`] (a stable, shared attribution id), delivery
@@ -499,6 +600,53 @@ mod tests {
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
         move |key| owned.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn session_attribution_combines_client_and_bus_id() {
+        assert_eq!(
+            session_attribution_value("claude-code", Some("mcp-1274-fbba0c02")).as_deref(),
+            Some("claude-code:mcp-1274-fbba0c02")
+        );
+        assert_eq!(
+            session_attribution_value("Codex MCP Client", None).as_deref(),
+            Some("codex-mcp-client")
+        );
+        assert_eq!(
+            session_attribution_value("", Some("mcp-9-x")).as_deref(),
+            Some("mcp-9-x")
+        );
+        assert_eq!(session_attribution_value("  ", None), None);
+    }
+
+    #[test]
+    fn session_attribution_is_bounded_and_ledger_safe() {
+        let long = "x".repeat(500);
+        let value = session_attribution_value(&format!("{long}\n:/"), Some(&long)).unwrap();
+        assert!(value.len() <= 48 + 1 + 72, "{}", value.len());
+        assert!(
+            value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
+        );
+    }
+
+    #[test]
+    fn host_from_env_detects_agent_hosts() {
+        assert_eq!(
+            host_from_env(env_of(&[("CLAUDECODE", "1")])),
+            Some("claude")
+        );
+        assert_eq!(
+            host_from_env(env_of(&[("CODEX_THREAD_ID", "t-1")])),
+            Some("codex")
+        );
+        assert_eq!(
+            host_from_env(env_of(&[("CURSOR_TASK_ID", "task")])),
+            Some("cursor")
+        );
+        assert_eq!(host_from_env(env_of(&[("CLAUDECODE", " ")])), None);
+        assert_eq!(host_from_env(env_of(&[])), None);
     }
 
     #[test]
