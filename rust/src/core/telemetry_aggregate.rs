@@ -34,13 +34,17 @@ use counters::{add_counters, counter_delta};
 use environment::{client_family, distribution_channel, setup_profile};
 use features::{FeatureTally, add_feature, feature_metrics};
 
-/// Most send attempts per installation and UTC day. The server admits ten;
-/// two stay in reserve for clock skew between client and server.
-pub const DAILY_SEND_CAP: u32 = 8;
+/// Most send attempts per installation and UTC day: a snapshot every half hour
+/// of a day in use. The server admits sixty (from Oct 2026; ten before); the
+/// rest stays in reserve for retries and clock skew between client and server.
+pub const DAILY_SEND_CAP: u32 = 48;
 /// Backoff base while today's first send has not been acknowledged yet.
 const RETRY_BACKOFF_SECS: i64 = 60;
-/// Spacing after the first acknowledged send of a day; doubles per attempt.
-const RESEND_INTERVAL_SECS: i64 = 15 * 60;
+/// Flat spacing after the first acknowledged send of a day: while LeanCTX is in
+/// use the latest totals are never more than half an hour old. (It used to
+/// double up to two hours, leaving evening activity unreported until morning.)
+const RESEND_INTERVAL_SECS: i64 = 30 * 60;
+/// Ceiling for the retry backoff of an unacknowledged send.
 const MAX_SEND_INTERVAL_SECS: i64 = 2 * 60 * 60;
 /// Flat spacing for the exit flush, so a session's final calls still arrive.
 const EXIT_RESEND_INTERVAL_SECS: i64 = 5 * 60;
@@ -368,8 +372,9 @@ pub fn begin_send(trigger: SendTrigger) -> Result<DailySendLease, String> {
 }
 
 /// Whether the next attempt is due. Attempts in a day are capped below the
-/// server's own limit; their spacing grows so a long session sends a handful
-/// of cumulative snapshots and an offline machine backs off.
+/// server's own limit. An acknowledged day is re-sent at a flat half-hour
+/// spacing while tools are in use; an unacknowledged send backs off, so an
+/// offline machine retries ever more rarely.
 fn admit(
     state: &AggregateState,
     now: i64,
@@ -393,7 +398,7 @@ fn admit(
     } else if trigger == SendTrigger::Exit {
         EXIT_RESEND_INTERVAL_SECS
     } else {
-        backoff(RESEND_INTERVAL_SECS, attempts)
+        RESEND_INTERVAL_SECS
     };
     // A clock that moved backwards must not stall sending until it catches up.
     let elapsed = state

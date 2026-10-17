@@ -526,6 +526,8 @@ fn a_clock_that_moved_backwards_does_not_stall_sending() {
 fn periodic_sends_leave_one_attempt_of_the_daily_cap_for_exit() {
     let _iso = crate::core::data_dir::isolated_data_dir();
     let mut now = T0;
+    // The spacing stays flat: every send of the day is due half an hour after
+    // the previous one, the forty-seventh as much as the second.
     for _ in 0..DAILY_SEND_CAP - 1 {
         let _clock = TestClockGuard::set(BUCKET, now);
         record_sync_result(true).expect("new activity");
@@ -533,7 +535,7 @@ fn periodic_sends_leave_one_attempt_of_the_daily_cap_for_exit() {
             .expect("periodic send within cap")
             .commit()
             .expect("commit");
-        now += MAX_SEND_INTERVAL_SECS;
+        now += RESEND_INTERVAL_SECS;
     }
     let _clock = TestClockGuard::set(BUCKET, now);
     record_sync_result(true).expect("final activity");
@@ -549,7 +551,7 @@ fn periodic_sends_leave_one_attempt_of_the_daily_cap_for_exit() {
     lease.commit().expect("commit exit send");
     const {
         assert!(
-            DAILY_SEND_CAP < 10,
+            DAILY_SEND_CAP < 60,
             "must stay below the server's daily limit"
         );
     };
@@ -557,6 +559,32 @@ fn periodic_sends_leave_one_attempt_of_the_daily_cap_for_exit() {
     let _clock = TestClockGuard::set(BUCKET, now + MAX_SEND_INTERVAL_SECS);
     let error = begin_send(SendTrigger::Exit).err().expect("hard cap");
     assert!(error.contains("limit reached"), "{error}");
+}
+
+#[test]
+#[serial_test::serial]
+fn an_acknowledged_day_is_resent_every_half_hour_not_later() {
+    let _iso = crate::core::data_dir::isolated_data_dir();
+    let mut now = T0;
+    for _ in 0..5 {
+        let _clock = TestClockGuard::set(BUCKET, now);
+        record_sync_result(true).expect("new activity");
+        begin_daily_send().expect("due").commit().expect("commit");
+        now += RESEND_INTERVAL_SECS;
+    }
+    // A minute early is refused without consuming an attempt; on the half hour
+    // the sixth send is due, where a doubling backoff would wait two hours.
+    let _clock = TestClockGuard::set(BUCKET, now - 60);
+    record_sync_result(true).expect("new activity");
+    let error = begin_daily_send().err().expect("not due a minute early");
+    assert!(error.contains("not due"), "{error}");
+    assert_eq!(attempts_today(), 5);
+    let _clock = TestClockGuard::set(BUCKET, now);
+    begin_daily_send()
+        .expect("due on the half hour")
+        .commit()
+        .expect("commit");
+    assert_eq!(attempts_today(), 6);
 }
 
 #[test]

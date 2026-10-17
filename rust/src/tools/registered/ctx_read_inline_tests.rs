@@ -429,7 +429,8 @@ fn engine_interface_boundary_rejects_invalid_versions_and_batch_use() {
         };
         assert_eq!(
             error.message,
-            "engine_interface=\"v1\" supports only single-path ctx_read"
+            "engine_interface=\"v1\" reads one file per call: pass `path` instead of `paths` \
+             and call once per file, or leave out engine_interface to read several files at once"
         );
     }
 
