@@ -130,8 +130,25 @@ pub(in crate::server) async fn dispatch_primitive(
     // Ledger and security events recorded during this call commit the
     // session id into their hashes, so `lean-ctx value` can scope to it.
     crate::core::value::set_current_session(&server.session.read().await.id);
+    // Before dispatch: a `cd` in the command moves the session's shell cwd,
+    // but the command's relative paths are relative to where it started.
+    let shell_base = if name == "ctx_shell" {
+        shell_command_base_dir(server, args).await
+    } else {
+        None
+    };
     let (dispatched, archive_authority) =
         crate::core::archive::authority::capture(server.dispatch_tool(name, args, minimal)).await;
+    if name == "ctx_shell"
+        && let Ok((_, _, outcome, _)) = &dispatched
+        && !matches!(
+            outcome,
+            Some(crate::server::tool_trait::ShellOutcome::Blocked)
+        )
+    {
+        let cmd = helpers::get_str(args, "command").unwrap_or_default();
+        record_shell_file_effects(&cmd, shell_base.as_deref());
+    }
     let (result_text, tool_saved_tokens, shell_outcome, content_blocks) = match dispatched {
         Ok(tuple) => tuple,
         Err(e) if e.code == crate::server::tool_trait::TOOL_EXECUTION_ERROR => {
@@ -968,13 +985,6 @@ pub(in crate::server) async fn reversible_post_process(
     if !minimal && !is_raw_shell && name == "ctx_shell" {
         let cmd = helpers::get_str(args, "command").unwrap_or_default();
 
-        if let Some(file_path) = extract_file_read_from_shell(&cmd)
-            && let Ok(mut bt) = crate::core::bounce_tracker::global().lock()
-        {
-            bt.next_seq();
-            bt.record_shell_file_access(&file_path);
-        }
-
         if profile_hints.efficiency_hint() {
             let calls = server.tool_calls.read().await;
             let last_original = calls.last().map_or(0, |c| c.original_tokens);
@@ -1414,6 +1424,62 @@ use telemetry::{mcp_error_category, record_error_category, record_shell_error_ca
 mod triage;
 use triage::apply_task_triage_filter;
 pub(super) use triage::{triage_bypass_requested, verbatim_requested};
+
+/// The directory a `ctx_shell` command starts in: its explicit `cwd`, else the
+/// session's shell cwd, else the project root.
+async fn shell_command_base_dir(
+    server: &LeanCtxServer,
+    args: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
+    if let Some(cwd) = helpers::get_str(args, "cwd").filter(|c| !c.trim().is_empty()) {
+        return Some(cwd);
+    }
+    let session = server.session.read().await;
+    session
+        .shell_cwd
+        .clone()
+        .or_else(|| session.project_root.clone())
+        .filter(|c| !c.trim().is_empty())
+}
+
+/// Feed a shell command's file reads and edits to the bounce tracker: a full
+/// read (`cat`) can complete a correction of a compressed view, a partial one
+/// (`head`, `sed -n`) never does, and an edit (`sed -i`, `>`, `tee`, `cp`/`mv`,
+/// `apply_patch`) cancels the provisional correction of its file as
+/// read-before-edit.
+fn record_shell_file_effects(command: &str, base: Option<&str>) {
+    use crate::core::bounce_tracker::ReadView;
+    use crate::core::shell_file_effects::ShellReadKind;
+    let effects = crate::core::shell_file_effects::analyze(command);
+    if effects.reads.is_empty() && effects.edits.is_empty() {
+        return;
+    }
+    let resolve = |path: &str| -> String {
+        match base {
+            Some(dir) if !std::path::Path::new(path).is_absolute() && !path.starts_with('~') => {
+                std::path::Path::new(dir)
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+            _ => path.to_string(),
+        }
+    };
+    let Ok(mut bt) = crate::core::bounce_tracker::global().lock() else {
+        return;
+    };
+    bt.next_seq();
+    for (path, kind) in &effects.reads {
+        let view = match kind {
+            ShellReadKind::Full => ReadView::Full,
+            ShellReadKind::Partial => ReadView::Partial,
+        };
+        bt.record_shell_read(&resolve(path), view);
+    }
+    for path in &effects.edits {
+        bt.record_edit(&resolve(path));
+    }
+}
 
 /// Record real compression savings after every response rewrite is complete.
 ///
