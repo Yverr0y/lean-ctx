@@ -215,9 +215,26 @@ pub fn guidance_profile(cfg: &crate::core::config::Config, client_name: &str) ->
         hook_covered: false, // no longer affects the candidate set (GH #1474)
     });
     narrow_to_surface(
-        cfg.tool_profile_effective(),
+        lazy_core_surface(cfg.tool_profile_effective(), candidate),
         &cfg.disabled_tools_effective(),
         ClientQuirks::resolve(client_name, candidate),
+    )
+}
+
+/// The unpinned default resolves to `Power`, but `tools/list` advertises only
+/// `CORE_TOOL_NAMES` there; the rest is reached through `ctx_call`. Guidance
+/// written for `Power` named tools such as `ctx_knowledge` that OpenCode and
+/// other lazy-core clients never saw, and agents called them directly.
+fn lazy_core_surface(profile: ToolProfile, candidate: CandidateSet) -> ToolProfile {
+    if candidate != CandidateSet::LazyCore {
+        return profile;
+    }
+    ToolProfile::Custom(
+        crate::tool_defs::CORE_TOOL_NAMES
+            .iter()
+            .filter(|name| profile.is_tool_enabled(name))
+            .map(|name| (*name).to_string())
+            .collect(),
     )
 }
 
@@ -577,6 +594,31 @@ mod tests {
         // Nothing else is lost on the way.
         assert!(text.contains("ctx_patch"));
         assert!(text.contains("ctx_compose"));
+    }
+
+    #[test]
+    fn lazy_core_guidance_names_only_core_tools() {
+        // The unpinned default is `Power`, yet a lazy-core session (OpenCode,
+        // Cursor, …) is offered only CORE_TOOL_NAMES. Its rules named
+        // ctx_knowledge, which the agent then called and could not find.
+        let core = lazy_core_surface(ToolProfile::Power, CandidateSet::LazyCore);
+        let native = ClientQuirks {
+            hide_ctx_edit: false,
+            hide_ctx_patch: true,
+        };
+        let surface = narrow_to_surface(core, &[], native);
+        let text = guidance_names(&surface);
+        for absent in ["ctx_knowledge", "ctx_patch", "ctx_graph", "ctx_overview"] {
+            assert!(!text.contains(absent), "names {absent}:\n{text}");
+        }
+        for present in ["ctx_compose", "ctx_session", "ctx_callgraph", "ctx_call("] {
+            assert!(text.contains(present), "misses {present}:\n{text}");
+        }
+        // A pinned profile is authoritative and keeps its full set.
+        assert_eq!(
+            lazy_core_surface(ToolProfile::Power, CandidateSet::ProfileAuthoritative),
+            ToolProfile::Power
+        );
     }
 
     #[test]

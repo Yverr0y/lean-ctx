@@ -28,12 +28,21 @@ pub use content::{
 };
 pub use skills::{install_all_skills, install_skill_for_agent};
 
+/// The tool set client-neutral rule files may name: what `tools/list` offers a
+/// client without quirks (the lean core when no profile is pinned). These files
+/// are shared by every agent in a home or project, so no client is known.
+fn shared_surface_profile(
+    cfg: &crate::core::config::Config,
+) -> crate::core::tool_profiles::ToolProfile {
+    crate::server::tool_visibility::guidance_profile(cfg, "")
+}
+
 /// Forwarding functions — content is delegated to `core::rules_canonical`.
 pub fn canonical_rules_block() -> String {
     let cfg = crate::core::config::Config::load();
     let shadow = cfg.shadow_mode;
     let level = crate::core::config::CompressionLevel::effective(&cfg);
-    let profile = crate::core::tool_profiles::ToolProfile::from_config(&cfg);
+    let profile = shared_surface_profile(&cfg);
     crate::core::rules_canonical::render(
         shadow,
         crate::core::rules_canonical::Wrapper::Shared,
@@ -48,7 +57,7 @@ pub fn rules_dedicated_markdown() -> String {
     let cfg = crate::core::config::Config::load();
     let shadow = cfg.shadow_mode;
     let level = crate::core::config::CompressionLevel::effective(&cfg);
-    let profile = crate::core::tool_profiles::ToolProfile::from_config(&cfg);
+    let profile = shared_surface_profile(&cfg);
     crate::core::rules_canonical::render(
         shadow,
         crate::core::rules_canonical::Wrapper::Dedicated,
@@ -64,7 +73,7 @@ pub fn rules_longform_markdown() -> String {
     let cfg = crate::core::config::Config::load();
     let shadow = cfg.shadow_mode;
     let level = crate::core::config::CompressionLevel::effective(&cfg);
-    let profile = crate::core::tool_profiles::ToolProfile::from_config(&cfg);
+    let profile = shared_surface_profile(&cfg);
     crate::core::rules_canonical::render(
         shadow,
         crate::core::rules_canonical::Wrapper::Longform,

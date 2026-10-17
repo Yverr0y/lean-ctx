@@ -14,6 +14,17 @@ fn has(p: &ToolProfile, name: &str) -> bool {
     p.is_tool_enabled(name)
 }
 
+/// The memory tools the profile offers, in the wording the rules use. The lazy
+/// core offers ctx_session but keeps ctx_knowledge behind ctx_call.
+fn memory_tools(p: &ToolProfile) -> Option<&'static str> {
+    match (has(p, "ctx_session"), has(p, "ctx_knowledge")) {
+        (true, true) => Some("ctx_session / ctx_knowledge"),
+        (true, false) => Some("ctx_session"),
+        (false, true) => Some("ctx_knowledge"),
+        (false, false) => None,
+    }
+}
+
 /// Intent-to-tool playbook — only advertises tools the profile exposes.
 pub(crate) fn intent_section(p: &ToolProfile) -> String {
     let mut lines = vec!["Tool selection by intent:".to_string()];
@@ -42,8 +53,8 @@ pub(crate) fn intent_section(p: &ToolProfile) -> String {
     lines.push(nav);
 
     let mut verify = String::from("• Verify after edits -> ctx_shell(test/build)");
-    if has(p, "ctx_session") || has(p, "ctx_knowledge") {
-        verify.push_str("; memory -> ctx_session / ctx_knowledge");
+    if let Some(memory) = memory_tools(p) {
+        verify.push_str(&format!("; memory -> {memory}"));
     }
     lines.push(verify);
 
@@ -84,12 +95,10 @@ pub(crate) fn hook_covered_tools_section(p: &ToolProfile) -> String {
         );
     }
 
-    if has(p, "ctx_session") || has(p, "ctx_knowledge") {
-        lines.push(
-            "• ctx_session / ctx_knowledge — persistent memory — record decisions & \
-             progress after milestones"
-                .into(),
-        );
+    if let Some(memory) = memory_tools(p) {
+        lines.push(format!(
+            "• {memory} — persistent memory — record decisions & progress after milestones"
+        ));
     }
 
     if has(p, "ctx_expand") {
@@ -114,8 +123,14 @@ pub(crate) fn shadow_minimal_section(p: &ToolProfile) -> String {
     if has(p, "ctx_callgraph") {
         exclusives.push("ctx_callgraph (callers)");
     }
-    if has(p, "ctx_knowledge") || has(p, "ctx_session") {
-        exclusives.push("ctx_knowledge / ctx_session (memory)");
+    // Name only what the profile offers (the lazy core has ctx_session but
+    // keeps ctx_knowledge behind ctx_call, which `ctx_call_fallback` covers).
+    // The full pair keeps its established order (identical to SHADOW_MINIMAL).
+    match (has(p, "ctx_session"), has(p, "ctx_knowledge")) {
+        (true, true) => exclusives.push("ctx_knowledge / ctx_session (memory)"),
+        (true, false) => exclusives.push("ctx_session (memory)"),
+        (false, true) => exclusives.push("ctx_knowledge (memory)"),
+        (false, false) => {}
     }
 
     // #1849: the same text goes to every host, and their edit tools differ
@@ -212,10 +227,9 @@ pub(crate) fn ctx_call_fallback(p: &ToolProfile) -> Option<String> {
     if matches!(p, ToolProfile::Power) {
         return None;
     }
-    Some(
-        "Advanced tools not in your profile are available via ctx_call(tool=<name>) gateway."
-            .into(),
-    )
+    // Kept short: the lean core now carries this line in every session's
+    // instructions, which have a fixed token budget.
+    Some("Other tools: ctx_call(tool=<name>).".into())
 }
 
 #[cfg(test)]

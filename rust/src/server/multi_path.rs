@@ -3,6 +3,13 @@ use serde_json::{Map, Value};
 
 use crate::server::tool_trait::{ToolContext, get_str, get_str_array};
 
+/// Refusal for a walk without `path` while the session has no project: the
+/// host started lean-ctx in a broad directory and reported none.
+const NO_PROJECT_GUIDANCE: &str = "lean-ctx has no project for this session yet: the host \
+     started it outside a project (often the home directory) and reported no project \
+     directory. Pass the absolute path of the project directory as `path`, e.g. \
+     path=\"/home/me/code/my-app\"; any path inside a project then stays the session project.";
+
 #[derive(Debug)]
 pub struct ResolvedPaths {
     pub roots: Vec<String>,
@@ -134,11 +141,14 @@ pub fn resolve_tool_paths(
 
     // Validate before extra roots can return a default scope. An empty or
     // relative primary must never be interpreted against the process CWD.
+    // The refusal says how to recover: hosts that start lean-ctx in the home
+    // directory (OpenCode launched from `~`) hit it on the first call of a
+    // session, and a bare "root is required" left agents repeating the call.
     if ctx.project_root.trim().is_empty() {
-        return Err("active project root is required when no path is supplied".to_string());
+        return Err(NO_PROJECT_GUIDANCE.to_string());
     }
     if !std::path::Path::new(&ctx.project_root).is_absolute() {
-        return Err("active project root must be absolute when no path is supplied".to_string());
+        return Err(NO_PROJECT_GUIDANCE.to_string());
     }
 
     if let Some(session_lock) = ctx.session.as_ref() {
@@ -264,7 +274,11 @@ mod tests {
         let mut ctx = test_ctx();
         ctx.project_root.clear();
         let error = resolve_tool_paths(&Map::new(), &ctx).unwrap_err();
-        assert!(error.contains("active project root is required"));
+        assert!(error.contains("no project for this session"), "{error}");
+        assert!(
+            error.contains("absolute path of the project directory"),
+            "{error}"
+        );
     }
 
     #[test]
