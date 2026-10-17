@@ -183,8 +183,15 @@ mod tests {
 
     #[test]
     fn missing_relative_path_without_a_project_says_what_is_missing() {
-        // A host started outside a project (`/` here; `~` behaves the same).
-        let error = resolve_tool_path(None, Some("/"), "src/no_such_file_lc.rs").unwrap_err();
+        // A host started outside a project: the home directory, as OpenCode
+        // does when launched from `~` (broad on every platform; `/` is not
+        // broad on Windows, where it means the current drive's root).
+        let home = dirs::home_dir()
+            .expect("home dir")
+            .to_string_lossy()
+            .to_string();
+        let error =
+            resolve_tool_path(None, Some(&home), "src/no_such_file_lc_7f3a.rs").unwrap_err();
         assert!(
             error.contains("has no project to resolve against"),
             "{error}"
