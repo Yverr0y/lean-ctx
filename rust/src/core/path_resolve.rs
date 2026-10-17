@@ -130,6 +130,12 @@ pub fn resolve_tool_path_with_roots(
         Path::new(&jail_root).join(&normalized)
     };
 
+    if project_root.is_none()
+        && let Some(error) = unbound_relative_path(raw, &resolved, shell_cwd.unwrap_or(&jail_root))
+    {
+        return Err(error);
+    }
+
     let jail_root_path = Path::new(&jail_root);
     let jailed =
         crate::core::pathjail::jail_path_auto_admitting(&resolved, jail_root_path, extra_roots)
@@ -138,6 +144,29 @@ pub fn resolve_tool_path_with_roots(
 
     Ok(crate::core::pathutil::normalize_tool_path(
         &jailed.to_string_lossy().replace('\\', "/"),
+    ))
+}
+
+/// Refusal for a relative path that cannot mean anything yet: the session has
+/// no project, the host started lean-ctx in a broad directory (OpenCode
+/// launched from `~`), and nothing exists at `resolved`. Without it agents got
+/// "file not found: ~/src/main.rs" and searched the wrong tree. `None` when the
+/// path is absolute, exists, or `base` is an ordinary working directory.
+pub(crate) fn unbound_relative_path(raw: &str, resolved: &Path, base: &str) -> Option<String> {
+    let normalized = crate::core::pathutil::normalize_tool_path(raw);
+    if Path::new(&normalized).is_absolute() || resolved.exists() {
+        return None;
+    }
+    let base = std::path::absolute(base).unwrap_or_else(|_| PathBuf::from(base));
+    if !crate::core::pathutil::is_broad_or_unsafe_root(&base) {
+        return None;
+    }
+    Some(format!(
+        "relative path '{raw}' has no project to resolve against: lean-ctx has no project for \
+         this session yet (the host started it in {}, outside a project). Pass the absolute \
+         path instead, e.g. /home/me/code/my-app/{normalized}; that project then stays the \
+         session project.",
+        base.display()
     ))
 }
 
@@ -150,6 +179,29 @@ mod tests {
     fn empty_and_dot_pass_through() {
         assert_eq!(resolve_tool_path(None, None, "").unwrap(), "");
         assert_eq!(resolve_tool_path(None, None, ".").unwrap(), ".");
+    }
+
+    #[test]
+    fn missing_relative_path_without_a_project_says_what_is_missing() {
+        // A host started outside a project (`/` here; `~` behaves the same).
+        let error = resolve_tool_path(None, Some("/"), "src/no_such_file_lc.rs").unwrap_err();
+        assert!(
+            error.contains("has no project to resolve against"),
+            "{error}"
+        );
+        assert!(error.contains("absolute path"), "{error}");
+
+        // A relative path in an ordinary working directory keeps resolving there.
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().to_string();
+        let outcome = resolve_tool_path(None, Some(&cwd), "src/no_such_file_lc.rs");
+        assert!(
+            outcome
+                .as_ref()
+                .err()
+                .is_none_or(|e| !e.contains("no project to resolve against")),
+            "{outcome:?}"
+        );
     }
 
     #[test]

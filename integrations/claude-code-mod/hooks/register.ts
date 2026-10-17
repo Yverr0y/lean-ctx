@@ -59,6 +59,7 @@ const LEAN_CTX_HOOK_TEXT_SIGNATURES: readonly LeanCtxHookTextSignature[] = [
       {
         end: "Use native Read for out-of-root; `lean-ctx doctor` shows effective roots.",
         continues: [
+          "Other tools: ctx_call(tool=<name>).",
           "Advanced tools not in your profile are available via ctx_call(tool=<name>) gateway.",
           "Prefer stdlib and native platform alternatives before adding code or dependencies.",
           "Solution efficiency ladder:",
@@ -66,6 +67,15 @@ const LEAN_CTX_HOOK_TEXT_SIGNATURES: readonly LeanCtxHookTextSignature[] = [
         ],
       },
       {
+        end: "Other tools: ctx_call(tool=<name>).",
+        continues: [
+          "Prefer stdlib and native platform alternatives before adding code or dependencies.",
+          "Solution efficiency ladder:",
+          "challenge every requirement, prefer deletion.",
+        ],
+      },
+      {
+        // Emitted by lean-ctx 3.11.4 and earlier.
         end: "Advanced tools not in your profile are available via ctx_call(tool=<name>) gateway.",
         continues: [
           "Prefer stdlib and native platform alternatives before adding code or dependencies.",
@@ -98,6 +108,14 @@ const LEAN_CTX_HOOK_TEXT_SIGNATURES: readonly LeanCtxHookTextSignature[] = [
       },
       {
         end: "ctx_knowledge / ctx_session (memory).",
+        continues: [
+          "Prefer stdlib and native platform alternatives before adding code or dependencies.",
+          "Solution efficiency ladder:",
+          "challenge every requirement, prefer deletion.",
+        ],
+      },
+      {
+        end: "ctx_session (memory).",
         continues: [
           "Prefer stdlib and native platform alternatives before adding code or dependencies.",
           "Solution efficiency ladder:",

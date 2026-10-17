@@ -79,6 +79,12 @@ impl LeanCtxServer {
 
             // Session-scoped trusted roots (MCP roots/list, config extra_roots,
             // git worktrees) must widen the jail for an explicit path (#403).
+            if session.project_root.is_none()
+                && let Some(error) =
+                    crate::core::path_resolve::unbound_relative_path(path, &resolved, &jail_root)
+            {
+                return Err(error);
+            }
             (resolved, jail_root, session.extra_roots.clone())
         };
 

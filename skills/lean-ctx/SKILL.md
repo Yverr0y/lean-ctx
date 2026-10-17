@@ -28,20 +28,21 @@ output, focused search, recovery to exact source. Two rules beat every detail:
 | Find code by meaning | `ctx_search(action="semantic", query=…)` |
 | Find a text/regex pattern | `ctx_search(pattern=…, path=…)` |
 | Who calls X / what calls X makes | `ctx_callgraph(action="callers"|"callees", symbol=…)` |
-| Read a file you will edit | `ctx_read(path, mode="anchored")` → edit with `ctx_patch`, or the host's native edit tool |
+| Read a file you will edit | `ctx_read(path, mode="anchored")` → edit with the host's native edit tool, or `ctx_call(name="ctx_patch", arguments={…})` |
 | Read a file only for context | `ctx_read(path, mode="signatures"|"map")`; a range: `mode="lines:N-M"` |
 | Re-check a file after editing | `ctx_read(path, mode="diff")` |
 | Run a command (build, test, git, …) | `ctx_shell(command)` — output is compressed |
 | List files / directory shape | `ctx_glob(pattern)` / `ctx_tree(path, depth)` |
-| Remember across sessions | `ctx_session(action="finding"|"decision"|"task", value=…)`; durable project facts: `ctx_knowledge(action="remember", …)` |
+| Remember across sessions | `ctx_session(action="finding"|"decision"|"task", value=…)`; durable project facts: `ctx_call(name="ctx_knowledge", arguments={"action": "remember", …})` |
 
 Do not read or search through `ctx_shell` (`cat`, `sed -n`, `grep`, `rg`):
 that bypasses the read cache and symbol index. Use `ctx_read` / `ctx_search`.
 
 ## Deferred tools (ToolSearch)
 
-If the host lists lean-ctx tools by name only, load what the task needs in
-**one** call, e.g. `select:mcp__lean-ctx__ctx_compose,mcp__lean-ctx__ctx_search,mcp__lean-ctx__ctx_read`.
+If the host lists lean-ctx tools by name only (Claude Code's ToolSearch), load
+what the task needs in **one** call, e.g.
+`select:mcp__lean-ctx__ctx_compose,mcp__lean-ctx__ctx_search,mcp__lean-ctx__ctx_read`.
 Do not fall back to `ctx_shell` for everything because it happens to be loaded.
 A tool named here that your tool list lacks (the default profile shows a
 small core) is still callable: `ctx_call(name="ctx_knowledge", arguments={…})`.
