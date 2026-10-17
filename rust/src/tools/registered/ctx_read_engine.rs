@@ -118,15 +118,19 @@ pub(super) fn validate_v1_request_shape(
     if !enabled {
         return Ok(());
     }
+    // The messages name the way out: agents that sent `paths` with the engine
+    // interface kept retrying the same call (802 times on one installation).
     if args.contains_key("paths") {
         return Err(ErrorData::invalid_params(
-            "engine_interface=\"v1\" supports only single-path ctx_read",
+            "engine_interface=\"v1\" reads one file per call: pass `path` instead of `paths` \
+             and call once per file, or leave out engine_interface to read several files at once",
             None,
         ));
     }
     if args.get("mode").and_then(Value::as_str) != Some("aggressive") {
         return Err(ErrorData::invalid_params(
-            "engine_interface=\"v1\" requires mode=\"aggressive\"",
+            "engine_interface=\"v1\" requires mode=\"aggressive\"; leave out engine_interface \
+             to read in any other mode",
             None,
         ));
     }
