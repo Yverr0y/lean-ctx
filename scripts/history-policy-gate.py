@@ -1,5 +1,37 @@
 #!/usr/bin/env python3
-"""Bounded full-history audit and required baseline-delta policy gate."""
+"""Bounded full-history audit and required baseline-delta policy gate.
+
+Secret detection is two-stage:
+
+1. ``secret_rule.pickaxe_regex`` is a POSIX ERE that git evaluates natively
+   (``git log -S --pickaxe-regex`` for history, ``git grep -E`` for a tree).
+   It only narrows candidates cheaply; it is deliberately a superset of the
+   precise patterns on the line that carries the credential prefix, and it is
+   interval-free: bounded repetitions such as ``{36}`` make git's POSIX
+   matcher markedly slower over full history.
+2. ``secret_rule.credential_patterns`` are Python regexes evaluated over the
+   whole blob. They decide. Whole-blob matching lets a PEM block require key
+   material on the lines after its BEGIN line (git's pickaxe is line-bound),
+   and the ``password`` group of a database URL is checked against
+   ``secret_rule.password_policy`` so placeholders and documented local
+   development defaults are not reported as credentials.
+
+Two further, narrow filters keep test fixtures out without path allowlists:
+
+* ``synthetic_run_length``: a match containing an ascending run of that many
+  consecutive digits or letters (``ABCDEFGH``, ``01234567``) is a hand-made
+  fixture. A random credential contains such a run with negligible
+  probability (about 3e-11 for a 36-character token and a run of 8).
+* ``reviewed_blobs``: individually reviewed git blob IDs (for example a
+  self-signed loopback TLS key read only by tests). The exemption is bound to
+  the exact content; any edit produces a new blob and is scanned again.
+
+A history candidate counts only when the precise match count of the path rises
+in that commit (an introduction). Bare prefixes in detectors, tests and
+warning docs never reach a finding. The current-tree scan applies the same
+precise check at the tip, so an introduction the pickaxe cannot see (its
+candidate count unchanged) is still caught there.
+"""
 
 import argparse
 import hashlib
@@ -15,8 +47,20 @@ class GateError(RuntimeError):
     pass
 
 
-FULL_AUDIT_SCANNER_VERSIONS = ["commit-path/v2", "diff-pickaxe/v2", "public-tree/v2"]
+FULL_AUDIT_SCANNER_VERSIONS = ["commit-path/v2", "diff-pickaxe/v3", "public-tree/v3"]
 BASELINE_SCANNER_VERSIONS = FULL_AUDIT_SCANNER_VERSIONS
+SECRET_RULE_KEYS = {
+    "id",
+    "rationale",
+    "pickaxe_regex",
+    "credential_patterns",
+    "password_policy",
+    "synthetic_run_length",
+    "reviewed_blobs",
+}
+MIN_SYNTHETIC_RUN_LENGTH = 8
+SEQUENCES = ("0123456789", "abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+PASSWORD_POLICY_KEYS = {"min_length", "placeholder_prefixes", "placeholder_markers", "dev_default_passwords"}
 
 
 def canonical(value):
@@ -68,7 +112,91 @@ def load_policy(path):
         or set(source_paths) - {policy["policy_source_path"]} != set(sources)
     ):
         raise GateError("invalid scanner-source contract")
+    validate_secret_rule(policy["secret_rule"])
     return policy
+
+
+def string_list(value):
+    return isinstance(value, list) and all(isinstance(item, str) and item for item in value)
+
+
+def validate_secret_rule(rule):
+    if not isinstance(rule, dict) or set(rule) != SECRET_RULE_KEYS:
+        raise GateError("invalid secret-rule contract")
+    if not all(isinstance(rule[key], str) and rule[key] for key in ("id", "rationale", "pickaxe_regex")):
+        raise GateError("invalid secret-rule contract")
+    patterns = rule["credential_patterns"]
+    if (
+        not isinstance(patterns, list)
+        or not patterns
+        or not all(isinstance(item, dict) and set(item) == {"id", "regex"} and all(isinstance(v, str) and v for v in item.values()) for item in patterns)
+        or len({item["id"] for item in patterns}) != len(patterns)
+    ):
+        raise GateError("invalid credential-pattern contract")
+    for item in patterns:
+        try:
+            compiled = re.compile(item["regex"])
+        except re.error as exc:
+            raise GateError(f"invalid credential pattern: {item['id']}") from exc
+        if compiled.groupindex and set(compiled.groupindex) != {"password"}:
+            raise GateError(f"credential pattern may only name a password group: {item['id']}")
+    passwords = rule["password_policy"]
+    if (
+        not isinstance(passwords, dict)
+        or set(passwords) != PASSWORD_POLICY_KEYS
+        or not isinstance(passwords["min_length"], int)
+        or passwords["min_length"] < 1
+        or not all(string_list(passwords[key]) for key in PASSWORD_POLICY_KEYS - {"min_length"})
+        or any(value != value.lower() for value in passwords["dev_default_passwords"])
+    ):
+        raise GateError("invalid password-policy contract")
+    run = rule["synthetic_run_length"]
+    if not isinstance(run, int) or isinstance(run, bool) or run < MIN_SYNTHETIC_RUN_LENGTH:
+        raise GateError("invalid synthetic-run contract")
+    reviewed = rule["reviewed_blobs"]
+    if (
+        not isinstance(reviewed, list)
+        or not all(
+            isinstance(item, dict)
+            and set(item) == {"blob", "reason"}
+            and isinstance(item["blob"], str)
+            and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", item["blob"])
+            and isinstance(item["reason"], str)
+            and item["reason"].strip()
+            for item in reviewed
+        )
+        or len({item["blob"] for item in reviewed}) != len(reviewed)
+    ):
+        raise GateError("invalid reviewed-blob contract")
+
+
+def synthetic(value, run_length):
+    """True when value holds an ascending run of run_length digits or letters."""
+    return any(sequence[start : start + run_length] in value for sequence in SEQUENCES for start in range(len(sequence) - run_length + 1))
+
+
+def placeholder_password(value, passwords):
+    """True when a database-URL password is a placeholder or a documented dev default."""
+    return (
+        len(value) < passwords["min_length"]
+        or value.startswith(tuple(passwords["placeholder_prefixes"]))
+        or any(marker in value for marker in passwords["placeholder_markers"])
+        or value.lower() in passwords["dev_default_passwords"]
+    )
+
+
+def credential_count(text, rule):
+    """Count precise credential matches in text; the decision stage of SEC001."""
+    count = 0
+    for pattern in rule["credential_patterns"]:
+        for match in re.finditer(pattern["regex"], text):
+            password = match.groupdict().get("password")
+            if password is not None and placeholder_password(password, rule["password_policy"]):
+                continue
+            if synthetic(match.group(0), rule["synthetic_run_length"]):
+                continue
+            count += 1
+    return count
 
 
 def policy_fingerprint(policy):
@@ -180,16 +308,26 @@ def current_tree_scan(root, policy, ref="HEAD"):
     matches = git(root, timeout, "grep", "-I", "-l", "-E", policy["secret_rule"]["pickaxe_regex"], ref, allowed=(0, 1)).decode(errors="surrogateescape").splitlines()
     for value in matches:
         path = value.removeprefix(ref + ":")
-        if not scanner_source(path, policy):
-            object_ref = git(root, timeout, "rev-parse", f"{ref}:{path}").decode().strip()
-            findings.append(finding("current-secret", policy["secret_rule"]["id"], path, object_ref))
+        if scanner_source(path, policy) or not secret_match_count(root, timeout, ref, path, policy["secret_rule"]):
+            continue
+        object_ref = git(root, timeout, "rev-parse", f"{ref}:{path}").decode().strip()
+        findings.append(finding("current-secret", policy["secret_rule"]["id"], path, object_ref))
     return findings
 
 
-def secret_match_count(root, timeout, ref, path, regex):
-    """Count secret-rule matches for path at ref. Missing path → 0."""
-    blob = git(root, timeout, "show", f"{ref}:{path}", allowed=(0, 128))
-    return len(re.findall(regex, blob.decode(errors="surrogateescape")))
+def secret_match_count(root, timeout, ref, path, rule):
+    """Count precise credential matches for path at ref. Missing path or ref, or a reviewed blob → 0."""
+    blob_id = git(root, timeout, "rev-parse", "--verify", "--quiet", f"{ref}:{path}", allowed=(0, 1, 128)).decode().strip()
+    if not blob_id or blob_id in {item["blob"] for item in rule["reviewed_blobs"]}:
+        return 0
+    blob = git(root, timeout, "cat-file", "blob", blob_id, allowed=(0, 128))  # 128: a gitlink, not a blob
+    return credential_count(blob.decode(errors="surrogateescape"), rule)
+
+
+def secret_introduced(root, timeout, commit, path, rule):
+    """Pickaxe -S fires on introduce AND remove; only a rising precise count is an introduction."""
+    before = secret_match_count(root, timeout, f"{commit}^", path, rule)
+    return secret_match_count(root, timeout, commit, path, rule) > before
 
 
 def merge_base(root, timeout, left, right):
@@ -243,12 +381,7 @@ def delta_scan(root, policy, base):
             continue
         commit = lines_rec[0]
         for path in sorted(set(lines_rec[1:])):
-            if scanner_source(path, policy):
-                continue
-            # Pickaxe -S fires on introduce AND remove. Only flag introductions.
-            before = secret_match_count(root, timeout, f"{commit}^", path, regex)
-            after = secret_match_count(root, timeout, commit, path, regex)
-            if after <= before:
+            if scanner_source(path, policy) or not secret_introduced(root, timeout, commit, path, policy["secret_rule"]):
                 continue
             findings.append(finding("delta-secret", policy["secret_rule"]["id"], path, commit))
     return findings
@@ -311,7 +444,7 @@ def full_audit(root, policy):
         lines = [line for line in record.splitlines() if line]
         if lines:
             for path in sorted(set(lines[1:])):
-                if not scanner_source(path, policy):
+                if not scanner_source(path, policy) and secret_introduced(root, timeout, lines[0], path, policy["secret_rule"]):
                     findings.append(finding("full-secret", policy["secret_rule"]["id"], path, lines[0]))
     findings = bounded(findings, policy)
     current_ids = sorted(item["id"] for item in current_tree_scan(root, policy))
