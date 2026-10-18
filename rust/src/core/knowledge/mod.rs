@@ -365,29 +365,27 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         // Regression: the session-save path adds pre-built facts with add_fact()
         // and never ran the lifecycle, so a store grew to 638 records against a
-        // budget of 200. enforce_capacity() after the batch settles it.
-        let mut source_policy = default_policy();
-        source_policy.knowledge.max_facts = 1000;
-        let mut source = ProjectKnowledge::new("/tmp/test-batch-source");
+        // budget of 200. enforce_capacity() after the batch settles it. The store
+        // is filled under a generous budget, then held to the real one.
+        let mut generous = default_policy();
+        generous.knowledge.max_facts = 1000;
+        let mut k = ProjectKnowledge::new(root.path().to_str().unwrap());
         for i in 0..40 {
-            source.remember(
+            k.remember(
                 "finding",
                 &format!("key-{i}"),
                 &format!("value number {i}"),
                 "s1",
                 0.7,
-                &source_policy,
+                &generous,
             );
         }
         let mut policy = default_policy();
         policy.knowledge.max_facts = 5;
-        let mut k = ProjectKnowledge::new(root.path().to_str().unwrap());
-        for fact in source.facts.clone() {
-            k.add_fact(fact);
-        }
         assert!(
             k.facts.len() > policy.knowledge.max_facts,
-            "add_fact alone never evicts"
+            "{}",
+            k.facts.len()
         );
         k.enforce_capacity(&policy);
         assert!(
