@@ -210,6 +210,9 @@ pub fn import_session_into(
         if opts.finding_budget.is_some_and(|n| finding_count >= n) {
             break;
         }
+        if crate::core::auto_findings::is_activity_record(f.summary.trim()) {
+            continue;
+        }
         if let Some(floor) = opts.finding_salience_floor
             && crate::core::memory_salience::text_salience(&f.summary) < floor
         {
@@ -231,6 +234,7 @@ pub fn import_session_into(
         for fact in extract_session_facts(session) {
             knowledge.add_fact(fact);
         }
+        knowledge.enforce_capacity(policy);
     }
 
     ImportCounts {

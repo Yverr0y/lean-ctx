@@ -116,7 +116,7 @@ pub(crate) fn extract_session_facts(
 
     facts.extend(session.findings.iter().filter_map(|finding| {
         let summary = finding.summary.trim();
-        if summary.is_empty() {
+        if summary.is_empty() || crate::core::auto_findings::is_activity_record(summary) {
             return None;
         }
         let normalized = summary.to_ascii_lowercase();

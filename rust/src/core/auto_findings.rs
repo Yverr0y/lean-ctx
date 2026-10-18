@@ -16,6 +16,30 @@ static RECENT: Mutex<Vec<RecentEntry>> = Mutex::new(Vec::new());
 const DEDUP_WINDOW_SECS: u64 = 60;
 const MAX_SUMMARY_LEN: usize = 120;
 
+/// Whether a finding only records what the agent itself did — a read, a search,
+/// a graph lookup, in exactly the wording [`extract`] produces. Such records serve
+/// the running session (briefing, recap, handoff); they are activity, not
+/// knowledge, so they never become durable facts. Failures, test and build
+/// results stay findings. Matching the producer's own formats also catches the
+/// records older sessions still carry.
+pub(crate) fn is_activity_record(summary: &str) -> bool {
+    if let Some(rest) = summary.strip_prefix("Read ") {
+        let head = rest.split_once(" — ").map_or(rest, |(head, _)| head);
+        let (path, tail) = head
+            .split_once(' ')
+            .map_or((head, None), |(p, t)| (p, Some(t)));
+        let line_count = |tail: &str| {
+            tail.strip_prefix('(')
+                .and_then(|t| t.strip_suffix("L)"))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        };
+        return looks_like_path(path) && tail.is_none_or(line_count);
+    }
+    (summary.starts_with("Found `") && summary.contains("` in ") && summary.contains(" files"))
+        || summary.starts_with("Semantic search `")
+        || summary.starts_with("Files related to ")
+}
+
 /// Extract a finding from a tool call result. Returns `None` if the output
 /// is not interesting or if a duplicate was emitted within the dedup window.
 ///
@@ -595,6 +619,49 @@ pub(crate) fn clear_recent() {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn activity_records_are_exactly_what_the_producer_writes() {
+        let activity = [
+            extract_ctx_read("src/server/mod.rs 1400L\n   deps: tokio, serde\n", None),
+            extract_ctx_read(
+                "src/lib.rs [45L, full mode, 320 tok]\npub fn main() {}",
+                None,
+            ),
+            extract_ctx_read(
+                "rust/src/core/very/deeply/nested/module/task_control.rs 438L\n\n",
+                None,
+            ),
+            extract_ctx_search(
+                "pattern: \"pub fn extract\"\nsrc/a.rs:19: pub fn extract\n[1 matches in 1 files]",
+            ),
+            extract_ctx_graph("Files related to mod.rs (15):"),
+        ];
+        for finding in activity {
+            let summary = finding.expect("producer output").summary;
+            assert!(is_activity_record(&summary), "activity: {summary}");
+        }
+        let knowledge = [
+            extract_ctx_shell("exit: 1\n$ cargo clippy\nerror[E0425]: cannot find value `x`"),
+            extract_ctx_shell(
+                "exit: 0\n$ cargo test --lib\nrunning 2 tests\ntest result: ok. 2 passed; 0 failed;",
+            ),
+        ];
+        for finding in knowledge {
+            let summary = finding.expect("producer output").summary;
+            assert!(!is_activity_record(&summary), "knowledge: {summary}");
+        }
+        for written in [
+            "Read the docs and found the retry bug",
+            "Read src/a.rs: the lock is taken twice",
+            "Blocker: cannot connect to the registry",
+        ] {
+            assert!(
+                !is_activity_record(written),
+                "a person's finding stays: {written}"
+            );
+        }
+    }
 
     #[test]
     fn ctx_read_extracts_path_and_content() {

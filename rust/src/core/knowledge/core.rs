@@ -22,6 +22,19 @@ pub(super) fn admit_fact_fields<const N: usize>(fields: [&str; N]) -> Option<[St
 }
 
 impl ProjectKnowledge {
+    /// Runs the lifecycle as soon as the store exceeds its budget. `run_lifecycle`
+    /// sorts by importance and drains the excess back down to `max_facts`
+    /// (archiving it), so the store settles at <= max_facts. Every ingestion path
+    /// calls it — `remember` per fact, batch paths of pre-built facts once after
+    /// the batch: the session-save path that skipped it let a store grow to 638
+    /// records against a budget of 200. The earlier `* 2` guard let stores sit at
+    /// 103% (206/200) with no reclamation.
+    pub fn enforce_capacity(&mut self, policy: &MemoryPolicy) {
+        if self.facts.len() > policy.knowledge.max_facts {
+            let _ = self.run_memory_lifecycle(policy);
+        }
+    }
+
     pub fn run_memory_lifecycle(
         &mut self,
         policy: &MemoryPolicy,
@@ -276,15 +289,7 @@ impl ProjectKnowledge {
             });
         }
 
-        // Run the lifecycle as soon as we exceed the configured budget.
-        // `run_lifecycle` sorts by importance and drains the excess back down to
-        // `max_facts` (archiving it), so this is self-limiting: the store settles
-        // at <= max_facts. The previous `* 2` guard let a project's facts grow to
-        // twice the cap before any eviction fired, which is why stores were
-        // observed sitting at 103% (206/200) with no reclamation.
-        if self.facts.len() > policy.knowledge.max_facts {
-            let _ = self.run_memory_lifecycle(policy);
-        }
+        self.enforce_capacity(policy);
 
         self.updated_at = Utc::now();
         self.rebuild_index();
