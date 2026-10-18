@@ -9,6 +9,8 @@
 //! leanctx.com or the LeanCTX GitHub repository; anything else is dropped.
 //! It is shown once, to the person at an interactive terminal, and never
 //! enters an MCP response: server-provided text must not reach the AI model.
+//! The most recent notices are also kept, with the time they arrived, for the
+//! local cockpit's Inbox, which a person reads and marks done there.
 
 use std::io::IsTerminal;
 
@@ -21,6 +23,8 @@ const LINK_PREFIXES: &[&str] = &["https://leanctx.com/", "https://github.com/yvg
 const MAX_PENDING: usize = 3;
 /// IDs of shown notices remembered so a resend is not shown again.
 const MAX_SHOWN: usize = 200;
+/// Received notices kept with their text for the cockpit Inbox, newest last.
+const MAX_RECEIVED: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notice {
@@ -29,10 +33,21 @@ pub struct Notice {
     pub link: Option<String>,
 }
 
+/// A notice as it arrived. Showing it in the terminal does not remove it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ReceivedNotice {
+    id: String,
+    message: String,
+    link: Option<String>,
+    received_at: String,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct NoticeStore {
     pending: Vec<Notice>,
     shown: Vec<String>,
+    #[serde(default)]
+    received: Vec<ReceivedNotice>,
 }
 
 fn valid_link(link: &str) -> bool {
@@ -99,13 +114,27 @@ pub(crate) fn pending() -> Vec<Notice> {
     load().pending
 }
 
-/// Keeps notices that were neither shown nor already pending.
+/// Keeps notices that were neither shown nor already pending, and records each
+/// notice once, with its arrival time, for the cockpit.
 pub(crate) fn remember(notices: Vec<Notice>) {
     if notices.is_empty() {
         return;
     }
     let mut store = load();
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     for notice in notices {
+        if !store
+            .received
+            .iter()
+            .any(|received| received.id == notice.id)
+        {
+            store.received.push(ReceivedNotice {
+                id: notice.id.clone(),
+                message: notice.message.clone(),
+                link: notice.link.clone(),
+                received_at: now.clone(),
+            });
+        }
         if !store.shown.contains(&notice.id)
             && !store.pending.iter().any(|pending| pending.id == notice.id)
         {
@@ -114,6 +143,8 @@ pub(crate) fn remember(notices: Vec<Notice>) {
     }
     let excess = store.pending.len().saturating_sub(MAX_PENDING);
     store.pending.drain(..excess);
+    let excess = store.received.len().saturating_sub(MAX_RECEIVED);
+    store.received.drain(..excess);
     save(&store);
 }
 
@@ -197,6 +228,53 @@ mod tests {
             let found = &load().pending;
             assert!(found.is_empty(), "{found:?}");
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn the_cockpit_keeps_a_notice_after_the_terminal_showed_it() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        save(&NoticeStore::default());
+        let notice = Notice {
+            id: ID.into(),
+            message: "Fix is in 3.11.5".into(),
+            link: Some("https://leanctx.com/changelog".into()),
+        };
+        remember(vec![notice.clone()]);
+        let mut store = load();
+        store.shown.push(store.pending.remove(0).id);
+        save(&store);
+        remember(vec![notice]);
+        let received = load().received;
+        assert_eq!(received.len(), 1, "recorded once, kept after showing");
+        assert_eq!(received[0].message, "Fix is in 3.11.5");
+        assert!(chrono::DateTime::parse_from_rfc3339(&received[0].received_at).is_ok());
+
+        for n in 0..(MAX_RECEIVED + 5) {
+            remember(vec![Notice {
+                id: format!("00000000-0000-4000-8000-{n:012}"),
+                message: format!("notice {n}"),
+                link: None,
+            }]);
+        }
+        let received = load().received;
+        assert_eq!(received.len(), MAX_RECEIVED, "bounded");
+        assert_eq!(
+            received.last().map(|r| r.message.as_str()),
+            Some("notice 24")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_store_written_before_the_history_still_loads() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        let path = store_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!(r#"{{"pending":[],"shown":["{ID}"]}}"#)).unwrap();
+        let store = load();
+        assert_eq!(store.shown, vec![ID.to_string()]);
+        assert!(store.received.is_empty());
     }
 
     #[test]

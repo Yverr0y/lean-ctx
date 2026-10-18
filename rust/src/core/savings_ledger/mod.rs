@@ -49,23 +49,86 @@ fn enabled_from(value: Option<&str>) -> bool {
     }
 }
 
-/// Resolved (model_key, input_price_per_m) for this process. The active model is stable
-/// within a process, so we resolve the pricing table once.
+/// Resolved (model_id, input_price_per_m) for this process. The active model is stable
+/// within a process, so it is resolved once, at the first event: by then `initialize`
+/// has named the MCP client (see [`agent_id`]).
 fn model_and_price() -> &'static (String, f64) {
     static CACHE: OnceLock<(String, f64)> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let resolved = std::env::var("LEAN_CTX_MODEL")
+        let agent = agent_id();
+        let client = agent.split(':').next().unwrap_or_default();
+        let explicit = std::env::var("LEAN_CTX_MODEL")
             .or_else(|_| std::env::var("LCTX_MODEL"))
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            // No explicit model → value savings against the real model the proxy
-            // measured most, instead of the blended fallback (cross-process hint
-            // from `proxy_usage.json`). Falls back to blended when absent.
-            .or_else(crate::proxy::usage_meter::persisted_dominant_model);
+            .ok();
+        let configured = crate::core::config::Config::load()
+            .cost
+            .model_for_client(client);
+        let resolved = resolve_ledger_model(
+            explicit,
+            configured,
+            client.starts_with("codex"),
+            codex_configured_model,
+            crate::proxy::usage_meter::persisted_dominant_model,
+        );
+        // Disk cache only, no network: the price list the proxy keeps current.
+        crate::core::gain::live_pricing::ensure_loaded();
         let quote =
             crate::core::gain::model_pricing::ModelPricing::load().quote(resolved.as_deref());
-        (quote.model_key, quote.cost.input_per_m)
+        (
+            recorded_model(resolved.as_deref(), &quote),
+            quote.cost.input_per_m,
+        )
     })
+}
+
+/// The model this process's agent actually runs, first available wins:
+/// 1. `LEAN_CTX_MODEL` / `LCTX_MODEL`
+/// 2. `[cost.models]` for the client, then `[cost] default_model`
+/// 3. Codex: the `model` of its own configuration (Codex bypasses the proxy)
+/// 4. the model the LeanCTX proxy measured most (Claude Code and other proxied hosts)
+fn resolve_ledger_model(
+    explicit: Option<String>,
+    configured: Option<String>,
+    codex: bool,
+    codex_model: impl FnOnce() -> Option<String>,
+    proxy_model: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let given = |value: Option<String>| {
+        value
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+    };
+    given(explicit)
+        .or_else(|| given(configured))
+        .or_else(|| if codex { given(codex_model()) } else { None })
+        .or_else(|| given(proxy_model()))
+}
+
+/// The `model` Codex runs with: its active profile overlay first, then the base config.
+fn codex_configured_model() -> Option<String> {
+    let paths = crate::core::home::resolve_codex_config_paths()?;
+    let model_in = |path: &std::path::Path| -> Option<String> {
+        let doc: toml::Value = toml::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        doc.get("model")?.as_str().map(str::to_string)
+    };
+    paths
+        .profile()
+        .and_then(model_in)
+        .or_else(|| model_in(paths.base()))
+}
+
+/// The model name an event records. An exact or live price names its model; an
+/// estimated price keeps the real model name rather than the stand-in it was priced
+/// by (`claude-opus-5-5`, never `claude-opus-4.5`). Without any known model the
+/// blended fallback says exactly that.
+fn recorded_model(
+    resolved: Option<&str>,
+    quote: &crate::core::gain::model_pricing::ModelQuote,
+) -> String {
+    match resolved.map(str::trim).filter(|model| !model.is_empty()) {
+        Some(model) if quote.match_kind.is_estimated() => model.to_lowercase(),
+        _ => quote.model_key.clone(),
+    }
 }
 
 /// Privacy-preserving repo attribution: truncated SHA-256 of the process working
@@ -345,7 +408,7 @@ pub fn record_caching_event(model: &str, cache_read_tokens: u64, discount_usd: f
             .to_string(),
     );
     let quote = crate::core::gain::model_pricing::ModelPricing::load().quote(Some(model));
-    event.model_id = quote.model_key;
+    event.model_id = recorded_model(Some(model), &quote);
     event.unit_price_per_m_usd = quote.cost.input_per_m;
     event.baseline_tokens = cache_read_tokens;
     event.actual_tokens = cache_read_tokens;
@@ -434,6 +497,90 @@ mod tests {
         assert!(!enabled_from(Some("0")));
         assert!(!enabled_from(Some("false")));
         assert!(!enabled_from(Some(" No ")), "trim + case-insensitive");
+    }
+
+    fn some(model: &str) -> Option<String> {
+        Some(model.to_string())
+    }
+
+    #[test]
+    fn ledger_model_prefers_explicit_then_configured_then_host_then_proxy() {
+        let proxy = || some("claude-opus-5-5");
+        let codex = || some("gpt-6.1-sol");
+        assert_eq!(
+            resolve_ledger_model(some("gpt-5"), some("x"), true, codex, proxy),
+            some("gpt-5")
+        );
+        assert_eq!(
+            resolve_ledger_model(some("  "), some("internal-llm"), true, codex, proxy),
+            some("internal-llm"),
+            "a blank override falls through to the declared model"
+        );
+        assert_eq!(
+            resolve_ledger_model(None, None, true, codex, proxy),
+            some("gpt-6.1-sol"),
+            "Codex bypasses the proxy: its own configured model, not Claude's"
+        );
+        assert_eq!(
+            resolve_ledger_model(None, None, false, codex, proxy),
+            some("claude-opus-5-5"),
+            "other hosts: the model the proxy measured"
+        );
+        assert_eq!(
+            resolve_ledger_model(None, None, true, || None, proxy),
+            some("claude-opus-5-5")
+        );
+        assert_eq!(
+            resolve_ledger_model(None, None, false, codex, || None),
+            None
+        );
+    }
+
+    #[test]
+    fn recorded_model_never_names_the_pricing_stand_in() {
+        let pricing = crate::core::gain::model_pricing::ModelPricing::embedded();
+        // Not in the embedded table: priced by the Opus family estimate, but the
+        // event names the model the agent actually ran.
+        let estimated = pricing.quote(Some("claude-opus-5-5"));
+        assert!(estimated.match_kind.is_estimated());
+        assert_eq!(
+            recorded_model(Some("Claude-Opus-5-5"), &estimated),
+            "claude-opus-5-5"
+        );
+        let exact = pricing.quote(Some("claude-sonnet-4-5"));
+        assert!(!exact.match_kind.is_estimated());
+        assert_eq!(
+            recorded_model(Some("claude-sonnet-4-5"), &exact),
+            exact.model_key
+        );
+        let unknown = pricing.quote(None);
+        assert_eq!(recorded_model(None, &unknown), "fallback-blended");
+    }
+
+    #[test]
+    fn codex_model_comes_from_its_profile_then_its_base_config() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.toml"),
+            "model = \"gpt-6.1-sol\"\nmodel_reasoning_effort = \"high\"\n",
+        )
+        .unwrap();
+        crate::test_env::set_var("CODEX_HOME", home.path());
+        crate::test_env::remove_var(crate::core::home::LEAN_CTX_CODEX_PROFILE_ENV);
+        crate::test_env::remove_var(crate::core::home::CODEX_PROFILE_ENV);
+        assert_eq!(codex_configured_model(), some("gpt-6.1-sol"));
+        std::fs::write(
+            home.path().join("fast.config.toml"),
+            "model = \"gpt-6-luna\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            codex_configured_model(),
+            some("gpt-6-luna"),
+            "the sole profile overlay wins"
+        );
+        crate::test_env::remove_var("CODEX_HOME");
     }
 
     #[test]

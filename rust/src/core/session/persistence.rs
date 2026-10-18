@@ -362,6 +362,9 @@ fn persist_session_facts(session: &SessionState) -> Result<(), String> {
     for fact in facts {
         knowledge.add_fact(fact);
     }
+    if let Ok(policy) = crate::core::config::Config::load().memory_policy_effective() {
+        knowledge.enforce_capacity(&policy);
+    }
     knowledge.save()
 }
 
